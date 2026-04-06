@@ -44,6 +44,15 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, str]
         state=TaskState.SUCCEEDED,
         stage=TaskStage.FINALIZE,
         progress=100,
+        created_at=running_status.created_at,
     )
     await store.set_status(succeeded_status)
+    await store.append_event(
+        task_id,
+        {
+            "state": TaskState.SUCCEEDED.value,
+            "stage": TaskStage.FINALIZE.value,
+            "progress": 100,
+        },
+    )
     return {"task_id": task_id, "state": TaskState.SUCCEEDED.value}
