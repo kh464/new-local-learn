@@ -13,7 +13,9 @@ try:
 except ImportError:  # pragma: no cover
     FakeRedis = None
 
+from app.api.routes.tasks import get_task_store
 from app.main import create_app
+from app.storage.task_store import RedisTaskStore
 
 
 @pytest.fixture
@@ -40,11 +42,13 @@ async def fakeredis_client():
 
 
 @pytest_asyncio.fixture
-async def api_client():
+async def api_client(fakeredis_client):
     app = create_app()
+    app.dependency_overrides[get_task_store] = lambda: RedisTaskStore(fakeredis_client)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    app.dependency_overrides.clear()
 
 
 class _MemoryRedis:
