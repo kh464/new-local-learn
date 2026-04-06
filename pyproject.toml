@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q -p no:cacheprovider -p no:tmpdir -p app"
+addopts = "-q -p no:cacheprovider -p no:tmpdir"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
