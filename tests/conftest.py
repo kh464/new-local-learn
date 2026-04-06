@@ -34,6 +34,11 @@ async def fakeredis_client():
 
 
 @pytest_asyncio.fixture
+async def fake_job_context(fakeredis_client):
+    return {"redis": fakeredis_client}
+
+
+@pytest_asyncio.fixture
 async def api_client(fakeredis_client):
     store = RedisTaskStore(fakeredis_client)
     app = create_app(task_store=store)
