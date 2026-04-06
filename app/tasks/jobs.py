@@ -3,7 +3,19 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from app.core.models import AnalysisResult, TaskStage, TaskState, TaskStatus
+from app.core.models import (
+    AnalysisResult,
+    BackendSummary,
+    DetectedStackSummary,
+    FrontendSummary,
+    LogicSummary,
+    MermaidSections,
+    RepositorySummary,
+    TaskStage,
+    TaskState,
+    TaskStatus,
+    TutorialSummary,
+)
 from app.services.analyzers.backend_analyzer import BackendAnalyzer
 from app.services.analyzers.frontend_analyzer import FrontendAnalyzer
 from app.services.analyzers.logic_mapper import LogicMapper
@@ -167,15 +179,15 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, obje
             progress=_RUNNING_STAGE_PROGRESS[TaskStage.BUILD_DOC],
             created_at=running_status.created_at,
         )
-        repo_overview = {
-            "name": normalized_url.rstrip("/").split("/")[-1],
-            "files": repo_summary["files"],
-            "key_files": repo_summary["key_files"],
-            "file_count": repo_summary["file_count"],
-        }
+        repo_overview = RepositorySummary(
+            name=normalized_url.rstrip("/").split("/")[-1],
+            files=repo_summary["files"],
+            key_files=repo_summary["key_files"],
+            file_count=repo_summary["file_count"],
+        )
         markdown = MarkdownCompiler().compile(
             task_id=task_id,
-            repo_summary=repo_overview,
+            repo_summary=repo_overview.model_dump(),
             detected_stack=detected_stack,
             backend_summary=backend_summary,
             frontend_summary=frontend_summary,
@@ -190,12 +202,12 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, obje
             repo_path=str(repo_path),
             markdown_path=str(artifacts.markdown_path),
             repo_summary=repo_overview,
-            detected_stack=detected_stack,
-            backend_summary=backend_summary,
-            frontend_summary=frontend_summary,
-            logic_summary=logic_summary,
-            tutorial_summary=tutorial_summary,
-            mermaid_sections=mermaid_sections,
+            detected_stack=DetectedStackSummary.model_validate(detected_stack),
+            backend_summary=BackendSummary.model_validate(backend_summary),
+            frontend_summary=FrontendSummary.model_validate(frontend_summary),
+            logic_summary=LogicSummary.model_validate(logic_summary),
+            tutorial_summary=TutorialSummary.model_validate(tutorial_summary),
+            mermaid_sections=MermaidSections.model_validate(mermaid_sections),
         )
         await store.set_result(task_id, result.model_dump())
         await _set_stage(
