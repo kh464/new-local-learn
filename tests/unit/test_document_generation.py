@@ -3,6 +3,15 @@ from app.services.docs.markdown_compiler import MarkdownCompiler
 from app.services.docs.mermaid_builder import MermaidBuilder
 
 
+def test_mermaid_builder_reflects_detected_repo_stack():
+    mermaid = MermaidBuilder().build_system_diagram({"frameworks": ["fastapi", "react"]})
+
+    assert "React UI" in mermaid
+    assert "FastAPI API" in mermaid
+    assert "Worker" not in mermaid
+    assert "Redis" not in mermaid
+
+
 def test_markdown_compiler_includes_mermaid_and_routes():
     tutorial = TutorComposer().compose({"frameworks": ["fastapi", "react"]}, {"flows": []})
     mermaid = MermaidBuilder().build_system_diagram({"frameworks": ["fastapi", "react"]})

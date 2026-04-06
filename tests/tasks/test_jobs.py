@@ -19,7 +19,16 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
 
     assert result["task_id"] == "task-1"
     assert result["state"] == TaskState.SUCCEEDED.value
-    assert len(seen_statuses) == 2
+    assert [status.stage for status in seen_statuses] == [
+        TaskStage.FETCH_REPO,
+        TaskStage.SCAN_TREE,
+        TaskStage.DETECT_STACK,
+        TaskStage.ANALYZE_BACKEND,
+        TaskStage.ANALYZE_FRONTEND,
+        TaskStage.BUILD_DOC,
+        TaskStage.FINALIZE,
+    ]
+    assert [status.progress for status in seen_statuses] == [5, 20, 35, 50, 65, 85, 100]
     assert seen_statuses[0].created_at == seen_statuses[1].created_at
 
     status = await store.get_status("task-1")
@@ -31,22 +40,28 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
     result_payload = await store.get_result("task-1")
     assert result_payload["github_url"] == github_url
     assert result_payload["markdown_path"].endswith("result.md")
+    assert result_payload["repo_summary"]["key_files"] == ["package.json", "pyproject.toml"]
     assert "fastapi" in result_payload["detected_stack"]["frameworks"]
     assert "react" in result_payload["detected_stack"]["frameworks"]
+    assert result_payload["backend_summary"]["routes"][0]["path"] == "/health"
+    assert result_payload["frontend_summary"]["api_calls"][0]["url"] == "/health"
+    assert result_payload["logic_summary"]["flows"][0]["backend_route"] == "/health"
+    assert result_payload["tutorial_summary"]["run_steps"]
+    assert "React UI" in result_payload["mermaid_sections"]["system"]
 
     events = await store.get_events("task-1")
-    assert events == [
-        {
-            "state": TaskState.RUNNING.value,
-            "stage": TaskStage.FETCH_REPO.value,
-            "progress": 10,
-        },
-        {
-            "state": TaskState.SUCCEEDED.value,
-            "stage": TaskStage.FINALIZE.value,
-            "progress": 100,
-        },
+    assert [event["stage"] for event in events] == [
+        TaskStage.FETCH_REPO.value,
+        TaskStage.SCAN_TREE.value,
+        TaskStage.DETECT_STACK.value,
+        TaskStage.ANALYZE_BACKEND.value,
+        TaskStage.ANALYZE_FRONTEND.value,
+        TaskStage.BUILD_DOC.value,
+        TaskStage.FINALIZE.value,
     ]
+    assert [event["progress"] for event in events] == [5, 20, 35, 50, 65, 85, 100]
+    assert [event["state"] for event in events[:-1]] == [TaskState.RUNNING.value] * 6
+    assert events[-1]["state"] == TaskState.SUCCEEDED.value
 
 
 async def test_run_analysis_job_marks_failed_on_error(fake_job_context):
@@ -69,7 +84,15 @@ async def test_run_analysis_job_marks_failed_on_error(fake_job_context):
 
     assert result["task_id"] == "task-2"
     assert result["state"] == TaskState.FAILED.value
-    assert len(seen_statuses) == 2
+    assert [status.stage for status in seen_statuses[:-1]] == [
+        TaskStage.FETCH_REPO,
+        TaskStage.SCAN_TREE,
+        TaskStage.DETECT_STACK,
+        TaskStage.ANALYZE_BACKEND,
+        TaskStage.ANALYZE_FRONTEND,
+        TaskStage.BUILD_DOC,
+    ]
+    assert seen_statuses[-1].stage is TaskStage.FINALIZE
     assert seen_statuses[0].created_at == seen_statuses[1].created_at
 
     status = await store.get_status("task-2")
@@ -83,16 +106,17 @@ async def test_run_analysis_job_marks_failed_on_error(fake_job_context):
     assert result_payload is None
 
     events = await store.get_events("task-2")
-    assert events == [
-        {
-            "state": TaskState.RUNNING.value,
-            "stage": TaskStage.FETCH_REPO.value,
-            "progress": 10,
-        },
-        {
-            "state": TaskState.FAILED.value,
-            "stage": TaskStage.FINALIZE.value,
-            "progress": 100,
-            "error": "boom",
-        },
+    assert [event["stage"] for event in events[:-1]] == [
+        TaskStage.FETCH_REPO.value,
+        TaskStage.SCAN_TREE.value,
+        TaskStage.DETECT_STACK.value,
+        TaskStage.ANALYZE_BACKEND.value,
+        TaskStage.ANALYZE_FRONTEND.value,
+        TaskStage.BUILD_DOC.value,
     ]
+    assert events[-1] == {
+        "state": TaskState.FAILED.value,
+        "stage": TaskStage.FINALIZE.value,
+        "progress": 100,
+        "error": "boom",
+    }

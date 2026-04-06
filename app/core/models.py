@@ -41,4 +41,10 @@ class AnalysisResult(BaseModel):
     github_url: str
     repo_path: str
     markdown_path: str
+    repo_summary: dict[str, object]
     detected_stack: dict[str, list[str]]
+    backend_summary: dict[str, object]
+    frontend_summary: dict[str, object]
+    logic_summary: dict[str, object]
+    tutorial_summary: dict[str, object]
+    mermaid_sections: dict[str, str]

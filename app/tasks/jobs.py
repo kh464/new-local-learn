@@ -16,6 +16,15 @@ from app.services.repo.scanner import RepositoryScanner
 from app.storage.artifacts import ArtifactPaths
 from app.storage.task_store import RedisTaskStore
 
+_RUNNING_STAGE_PROGRESS = {
+    TaskStage.FETCH_REPO: 5,
+    TaskStage.SCAN_TREE: 20,
+    TaskStage.DETECT_STACK: 35,
+    TaskStage.ANALYZE_BACKEND: 50,
+    TaskStage.ANALYZE_FRONTEND: 65,
+    TaskStage.BUILD_DOC: 85,
+}
+
 
 def _get_task_store(ctx) -> RedisTaskStore:
     if isinstance(ctx, dict):
@@ -46,22 +55,45 @@ async def _maybe_await(value):
     return value
 
 
-async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, str]:
+async def _set_stage(
+    store: RedisTaskStore,
+    *,
+    task_id: str,
+    state: TaskState,
+    stage: TaskStage,
+    progress: int,
+    created_at,
+    error: str | None = None,
+) -> None:
+    status = TaskStatus(
+        task_id=task_id,
+        state=state,
+        stage=stage,
+        progress=progress,
+        error=error,
+        created_at=created_at,
+    )
+    await store.set_status(status)
+    event = {
+        "state": state.value,
+        "stage": stage.value,
+        "progress": progress,
+    }
+    if error is not None:
+        event["error"] = error
+    await store.append_event(task_id, event)
+
+
+async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, object]:
     store = _get_task_store(ctx)
-    running_status = TaskStatus(
+    running_status = TaskStatus(task_id=task_id, state=TaskState.RUNNING, stage=TaskStage.FETCH_REPO, progress=5)
+    await _set_stage(
+        store,
         task_id=task_id,
         state=TaskState.RUNNING,
         stage=TaskStage.FETCH_REPO,
-        progress=10,
-    )
-    await store.set_status(running_status)
-    await store.append_event(
-        task_id,
-        {
-            "state": TaskState.RUNNING.value,
-            "stage": TaskStage.FETCH_REPO.value,
-            "progress": 10,
-        },
+        progress=_RUNNING_STAGE_PROGRESS[TaskStage.FETCH_REPO],
+        created_at=running_status.created_at,
     )
     try:
         settings = _get_ctx_value(ctx, "settings")
@@ -79,6 +111,14 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, str]
         artifacts.task_dir.mkdir(parents=True, exist_ok=True)
 
         repo_path = Path(await _maybe_await(clone_repo(normalized_url, artifacts.repo_dir)))
+        await _set_stage(
+            store,
+            task_id=task_id,
+            state=TaskState.RUNNING,
+            stage=TaskStage.SCAN_TREE,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.SCAN_TREE],
+            created_at=running_status.created_at,
+        )
         scanner = RepositoryScanner(
             max_file_count=settings.max_file_count,
             max_file_bytes=settings.max_file_bytes,
@@ -86,18 +126,56 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, str]
         repo_summary = scanner.scan(repo_path)
         file_contents = await _maybe_await(read_files(repo_path, repo_summary["files"]))
 
+        await _set_stage(
+            store,
+            task_id=task_id,
+            state=TaskState.RUNNING,
+            stage=TaskStage.DETECT_STACK,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.DETECT_STACK],
+            created_at=running_status.created_at,
+        )
         detected_stack = StackDetector().detect(repo_summary["files"], file_contents)
+
+        await _set_stage(
+            store,
+            task_id=task_id,
+            state=TaskState.RUNNING,
+            stage=TaskStage.ANALYZE_BACKEND,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.ANALYZE_BACKEND],
+            created_at=running_status.created_at,
+        )
         backend_summary = BackendAnalyzer().analyze(file_contents)
+
+        await _set_stage(
+            store,
+            task_id=task_id,
+            state=TaskState.RUNNING,
+            stage=TaskStage.ANALYZE_FRONTEND,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.ANALYZE_FRONTEND],
+            created_at=running_status.created_at,
+        )
         frontend_summary = FrontendAnalyzer().analyze(file_contents)
         logic_summary = LogicMapper().map_flows(frontend_summary, backend_summary)
         tutorial_summary = TutorComposer().compose(detected_stack, logic_summary)
         mermaid_sections = {"system": MermaidBuilder().build_system_diagram(detected_stack)}
+
+        await _set_stage(
+            store,
+            task_id=task_id,
+            state=TaskState.RUNNING,
+            stage=TaskStage.BUILD_DOC,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.BUILD_DOC],
+            created_at=running_status.created_at,
+        )
+        repo_overview = {
+            "name": normalized_url.rstrip("/").split("/")[-1],
+            "files": repo_summary["files"],
+            "key_files": repo_summary["key_files"],
+            "file_count": repo_summary["file_count"],
+        }
         markdown = MarkdownCompiler().compile(
             task_id=task_id,
-            repo_summary={
-                "name": normalized_url.rstrip("/").split("/")[-1],
-                "key_files": repo_summary["key_files"],
-            },
+            repo_summary=repo_overview,
             detected_stack=detected_stack,
             backend_summary=backend_summary,
             frontend_summary=frontend_summary,
@@ -111,43 +189,32 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, str]
             github_url=normalized_url,
             repo_path=str(repo_path),
             markdown_path=str(artifacts.markdown_path),
+            repo_summary=repo_overview,
             detected_stack=detected_stack,
+            backend_summary=backend_summary,
+            frontend_summary=frontend_summary,
+            logic_summary=logic_summary,
+            tutorial_summary=tutorial_summary,
+            mermaid_sections=mermaid_sections,
         )
         await store.set_result(task_id, result.model_dump())
-        succeeded_status = TaskStatus(
+        await _set_stage(
+            store,
             task_id=task_id,
             state=TaskState.SUCCEEDED,
             stage=TaskStage.FINALIZE,
             progress=100,
             created_at=running_status.created_at,
         )
-        await store.set_status(succeeded_status)
-        await store.append_event(
-            task_id,
-            {
-                "state": TaskState.SUCCEEDED.value,
-                "stage": TaskStage.FINALIZE.value,
-                "progress": 100,
-            },
-        )
         return {"task_id": task_id, "state": TaskState.SUCCEEDED.value, "result": result.model_dump()}
     except Exception as exc:
-        failed_status = TaskStatus(
+        await _set_stage(
+            store,
             task_id=task_id,
             state=TaskState.FAILED,
             stage=TaskStage.FINALIZE,
             progress=100,
-            error=str(exc),
             created_at=running_status.created_at,
-        )
-        await store.set_status(failed_status)
-        await store.append_event(
-            task_id,
-            {
-                "state": TaskState.FAILED.value,
-                "stage": TaskStage.FINALIZE.value,
-                "progress": 100,
-                "error": str(exc),
-            },
+            error=str(exc),
         )
         return {"task_id": task_id, "state": TaskState.FAILED.value}
