@@ -3,28 +3,29 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "github-doc-generator"
+name = "github-tech-doc-generator"
 version = "0.1.0"
-description = "Automation for generating technical documentation from GitHub repositories."
-requires-python = ">=3.10"
+description = "Backend-first MVP for generating technical docs from GitHub repositories."
+requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.110.0",
-  "uvicorn[standard]>=0.27.0",
-  "pydantic>=2.6.0",
-  "pydantic-settings>=2.2.0",
-  "redis>=5.0.0",
-  "arq>=0.26.0",
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn[standard]>=0.30.0,<1.0.0",
+  "pydantic>=2.8.0,<3.0.0",
+  "pydantic-settings>=2.3.0,<3.0.0",
+  "redis>=5.0.0,<6.0.0",
+  "arq>=0.26.0,<0.27.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0.0",
-  "pytest-asyncio>=0.23.0",
-  "httpx>=0.27.0",
-  "fakeredis>=2.21.0",
+  "pytest>=8.2.0,<9.0.0",
+  "pytest-asyncio>=0.23.0,<0.24.0",
+  "httpx>=0.27.0,<0.28.0",
+  "fakeredis>=2.23.0,<3.0.0",
 ]
 
 [tool.pytest.ini_options]
 addopts = "-q -p no:cacheprovider -p no:tmpdir -p app"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

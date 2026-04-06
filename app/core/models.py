@@ -28,9 +28,9 @@ class AnalyzeRequest(BaseModel):
 
 class TaskStatus(BaseModel):
     task_id: str
-    state: TaskState | None = None
+    state: TaskState
     stage: TaskStage | None = None
-    progress: int | None = Field(default=None, ge=0, le=100)
+    progress: int = Field(default=0, ge=0, le=100)
     message: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
