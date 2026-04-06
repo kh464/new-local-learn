@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 _FRAMEWORK_MARKERS = {
     "fastapi": "fastapi",
@@ -23,9 +25,10 @@ class StackDetector:
         languages: list[str] = []
 
         for framework, marker in _FRAMEWORK_MARKERS.items():
-            for path in ("pyproject.toml", "package.json"):
-                content = file_contents.get(path, "").lower()
-                if marker in content:
+            for path, content in file_contents.items():
+                if Path(path).name.lower() not in {"pyproject.toml", "package.json"}:
+                    continue
+                if marker in content.lower():
                     frameworks.append(framework)
                     break
 
@@ -36,9 +39,10 @@ class StackDetector:
                     languages.append(language)
                     break
 
-            if lowered_path == "pyproject.toml" and "python" not in languages:
+            file_name = Path(path).name.lower()
+            if file_name == "pyproject.toml" and "python" not in languages:
                 languages.append("python")
-            if lowered_path == "package.json" and "javascript" not in languages and "typescript" not in languages:
+            if file_name == "package.json" and "javascript" not in languages and "typescript" not in languages:
                 languages.append("javascript")
 
         return {"frameworks": frameworks, "languages": languages}
