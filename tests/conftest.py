@@ -28,7 +28,7 @@ async def fakeredis_client():
     try:
         yield client
     finally:
-        result = client.close()
+        result = client.aclose()
         if inspect.isawaitable(result):
             await result
 

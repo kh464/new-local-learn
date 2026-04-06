@@ -2,6 +2,41 @@ from app.core.models import TaskState, TaskStatus
 from app.storage.task_store import RedisTaskStore
 
 
+async def test_app_lifespan_initializes_task_store(monkeypatch):
+    from app import main as app_main
+
+    class FakeRedis:
+        def __init__(self):
+            self.closed = False
+            self._connection_pool = self.ConnectionPool()
+
+        async def aclose(self):
+            self.closed = True
+
+        class ConnectionPool:
+            def __init__(self):
+                self.disconnected = False
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        @property
+        def connection_pool(self):
+            return self._connection_pool
+
+    client = FakeRedis()
+
+    monkeypatch.setattr(app_main, "Settings", lambda: type("S", (), {"redis_url": "redis://test/0"}))
+    monkeypatch.setattr(app_main, "_create_redis_client", lambda url: client)
+
+    app = app_main.create_app()
+    async with app.router.lifespan_context(app):
+        assert app.state.redis_client is client
+        assert isinstance(app.state.task_store, RedisTaskStore)
+    assert client.closed is True
+    assert client.connection_pool.disconnected is True
+
+
 async def test_analyze_endpoint_returns_urls(api_client, monkeypatch):
     async def fake_enqueue(task_id: str, github_url: str) -> str:
         return task_id

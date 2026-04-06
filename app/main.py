@@ -11,6 +11,14 @@ from app.core.config import Settings
 from app.storage.task_store import RedisTaskStore
 
 
+def _create_redis_client(redis_url: str):
+    try:
+        from redis.asyncio import from_url
+    except ImportError as exc:  # pragma: no cover - dependency required in prod
+        raise RuntimeError("Redis dependency is required for task storage.") from exc
+    return from_url(redis_url)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if getattr(app.state, "task_store", None) is not None:
@@ -18,20 +26,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         return
 
     settings = Settings()
-    try:
-        from redis.asyncio import from_url
-    except ImportError as exc:  # pragma: no cover - dependency required in prod
-        raise RuntimeError("Redis dependency is required for task storage.") from exc
-
-    client = from_url(settings.redis_url)
+    client = _create_redis_client(settings.redis_url)
     app.state.redis_client = client
     app.state.task_store = RedisTaskStore(client)
     try:
         yield
     finally:
-        close_result = client.close()
-        if inspect.isawaitable(close_result):
-            await close_result
+        close = getattr(client, "aclose", None) or getattr(client, "close", None)
+        if close is not None:
+            close_result = close()
+            if inspect.isawaitable(close_result):
+                await close_result
         disconnect = getattr(client, "connection_pool", None)
         if disconnect is not None:
             disconnect_result = client.connection_pool.disconnect()
