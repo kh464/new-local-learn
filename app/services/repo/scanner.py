@@ -14,6 +14,8 @@ class RepositoryScanner:
 
     def scan(self, repo_path: Path | str) -> dict[str, object]:
         root = Path(repo_path)
+        if not root.is_dir():
+            raise ValueError("Repository root must be an existing directory.")
         files: list[str] = []
         key_files: list[str] = []
 
