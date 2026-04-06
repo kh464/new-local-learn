@@ -1,29 +1,19 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from app.core.config import Settings
+from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.models import AnalyzeRequest, TaskStatus
 from app.storage.task_store import RedisTaskStore
 
 router = APIRouter()
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
-
-
-def get_task_store() -> RedisTaskStore:
-    settings = get_settings()
-    try:
-        from redis.asyncio import from_url
-    except ImportError as exc:  # pragma: no cover - dependency required in prod
-        raise RuntimeError("Redis dependency is required for task storage.") from exc
-    client = from_url(settings.redis_url)
-    return RedisTaskStore(client)
+def get_task_store(request: Request) -> RedisTaskStore:
+    store = getattr(request.app.state, "task_store", None)
+    if store is None:
+        raise RuntimeError("Task store is not configured.")
+    return store
 
 
 async def enqueue_analysis(task_id: str, github_url: str) -> str:

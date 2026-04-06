@@ -7,13 +7,8 @@ from uuid import uuid4
 import httpx
 import pytest
 import pytest_asyncio
+from fakeredis.aioredis import FakeRedis
 
-try:
-    from fakeredis.aioredis import FakeRedis
-except ImportError:  # pragma: no cover
-    FakeRedis = None
-
-from app.api.routes.tasks import get_task_store
 from app.main import create_app
 from app.storage.task_store import RedisTaskStore
 
@@ -29,10 +24,7 @@ def tmp_path() -> Path:
 
 @pytest_asyncio.fixture
 async def fakeredis_client():
-    if FakeRedis is None:
-        client = _MemoryRedis()
-    else:
-        client = FakeRedis()
+    client = FakeRedis()
     try:
         yield client
     finally:
@@ -43,36 +35,8 @@ async def fakeredis_client():
 
 @pytest_asyncio.fixture
 async def api_client(fakeredis_client):
-    app = create_app()
-    app.dependency_overrides[get_task_store] = lambda: RedisTaskStore(fakeredis_client)
+    store = RedisTaskStore(fakeredis_client)
+    app = create_app(task_store=store)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-    app.dependency_overrides.clear()
-
-
-class _MemoryRedis:
-    def __init__(self) -> None:
-        self._values: dict[str, str | bytes] = {}
-        self._lists: dict[str, list[str | bytes]] = {}
-
-    async def get(self, key: str):
-        return self._values.get(key)
-
-    async def set(self, key: str, value):
-        self._values[key] = value
-        return True
-
-    async def rpush(self, key: str, value):
-        items = self._lists.setdefault(key, [])
-        items.append(value)
-        return len(items)
-
-    async def lrange(self, key: str, start: int, end: int):
-        items = self._lists.get(key, [])
-        if end == -1:
-            return items[start:]
-        return items[start : end + 1]
-
-    def close(self):
-        return None
