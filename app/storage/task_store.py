@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.core.models import TaskStatus
+from app.core.models import AnalysisResult, TaskStatus
 
 
 class RedisTaskStore:
@@ -32,17 +32,17 @@ class RedisTaskStore:
             raw = raw.decode("utf-8")
         return TaskStatus.model_validate_json(raw)
 
-    async def set_result(self, task_id: str, result: dict[str, Any]) -> None:
-        payload = json.dumps(result, default=str)
-        await self._client.set(self._result_key(task_id), payload)
+    async def set_result(self, task_id: str, result: AnalysisResult | dict[str, Any]) -> None:
+        validated = AnalysisResult.model_validate(result)
+        await self._client.set(self._result_key(task_id), validated.model_dump_json())
 
-    async def get_result(self, task_id: str) -> dict[str, Any] | None:
+    async def get_result(self, task_id: str) -> AnalysisResult | None:
         raw = await self._client.get(self._result_key(task_id))
         if raw is None:
             return None
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
-        return json.loads(raw)
+        return AnalysisResult.model_validate_json(raw)
 
     async def append_event(self, task_id: str, event: dict[str, Any]) -> int:
         payload = json.dumps(event, default=str)

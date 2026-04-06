@@ -54,11 +54,11 @@ async def test_analyze_endpoint_returns_urls(api_client, monkeypatch):
     assert payload["stream_url"] == f"/api/v1/tasks/{task_id}/stream"
 
 
-async def test_task_endpoints_return_status_result_and_events(api_client, fakeredis_client):
+async def test_task_endpoints_return_status_result_and_events(api_client, fakeredis_client, sample_analysis_result):
     store = RedisTaskStore(fakeredis_client)
     status = TaskStatus(task_id="task-2", state=TaskState.RUNNING, progress=42)
     await store.set_status(status)
-    await store.set_result("task-2", {"doc": "ready"})
+    await store.set_result("task-2", sample_analysis_result)
     await store.append_event("task-2", {"message": "started"})
 
     status_response = await api_client.get("/api/v1/tasks/task-2")
@@ -67,8 +67,10 @@ async def test_task_endpoints_return_status_result_and_events(api_client, fakere
 
     result_response = await api_client.get("/api/v1/tasks/task-2/result")
     assert result_response.status_code == 200
-    assert result_response.json()["result"] == {"doc": "ready"}
+    assert result_response.json()["github_url"] == sample_analysis_result.github_url
+    assert result_response.json()["backend_summary"]["routes"][0]["path"] == "/health"
 
     stream_response = await api_client.get("/api/v1/tasks/task-2/stream")
     assert stream_response.status_code == 200
-    assert stream_response.json()["events"] == [{"message": "started"}]
+    assert stream_response.headers["content-type"].startswith("text/event-stream")
+    assert 'data: {"message":"started"}' in stream_response.text

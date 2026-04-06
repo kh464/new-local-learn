@@ -10,6 +10,20 @@ import pytest
 import pytest_asyncio
 from fakeredis.aioredis import FakeRedis
 
+from app.core.models import (
+    AnalysisResult,
+    BackendRouteSummary,
+    BackendSummary,
+    DetectedStackSummary,
+    FrontendApiCallSummary,
+    FrontendRouteSummary,
+    FrontendSummary,
+    LogicFlowSummary,
+    LogicSummary,
+    MermaidSections,
+    RepositorySummary,
+    TutorialSummary,
+)
 from app.main import create_app
 from app.storage.task_store import RedisTaskStore
 
@@ -85,3 +99,53 @@ async def api_client(fakeredis_client):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture
+def sample_analysis_result(tmp_path: Path) -> AnalysisResult:
+    markdown_path = tmp_path / "artifacts" / "task-1" / "result.md"
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text("# Result\n", encoding="utf-8")
+    repo_path = tmp_path / "source-repo"
+    repo_path.mkdir(exist_ok=True)
+    return AnalysisResult(
+        github_url="https://github.com/octocat/Hello-World",
+        repo_path=str(repo_path),
+        markdown_path=str(markdown_path),
+        repo_summary=RepositorySummary(
+            name="Hello-World",
+            files=["app/main.py", "web/App.tsx"],
+            key_files=["pyproject.toml", "package.json"],
+            file_count=4,
+        ),
+        detected_stack=DetectedStackSummary(
+            frameworks=["fastapi", "react"],
+            languages=["python", "typescript"],
+        ),
+        backend_summary=BackendSummary(
+            routes=[BackendRouteSummary(method="GET", path="/health", source_file="app/main.py")]
+        ),
+        frontend_summary=FrontendSummary(
+            routing=[FrontendRouteSummary(path="/", source_file="web/App.tsx")],
+            api_calls=[FrontendApiCallSummary(url="/health", source_file="web/App.tsx")],
+        ),
+        logic_summary=LogicSummary(
+            flows=[
+                LogicFlowSummary(
+                    frontend_call="/health",
+                    frontend_source="web/App.tsx",
+                    backend_route="/health",
+                    backend_source="app/main.py",
+                    backend_method="GET",
+                    confidence=0.9,
+                )
+            ]
+        ),
+        tutorial_summary=TutorialSummary(
+            mental_model="Frontend hits a FastAPI backend.",
+            run_steps=["Install dependencies", "Start the API", "Open the app"],
+            pitfalls=["Missing environment variables"],
+            self_check_questions=["Which route serves health?"],
+        ),
+        mermaid_sections=MermaidSections(system="graph TD\n  A[Client] --> B[API]"),
+    )

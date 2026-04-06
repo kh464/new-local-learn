@@ -38,16 +38,16 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
     assert status.progress == 100
 
     result_payload = await store.get_result("task-1")
-    assert result_payload["github_url"] == github_url
-    assert result_payload["markdown_path"].endswith("result.md")
-    assert result_payload["repo_summary"]["key_files"] == ["package.json", "pyproject.toml"]
-    assert "fastapi" in result_payload["detected_stack"]["frameworks"]
-    assert "react" in result_payload["detected_stack"]["frameworks"]
-    assert result_payload["backend_summary"]["routes"][0]["path"] == "/health"
-    assert result_payload["frontend_summary"]["api_calls"][0]["url"] == "/health"
-    assert result_payload["logic_summary"]["flows"][0]["backend_route"] == "/health"
-    assert result_payload["tutorial_summary"]["run_steps"]
-    assert "React UI" in result_payload["mermaid_sections"]["system"]
+    assert result_payload.github_url == github_url
+    assert result_payload.markdown_path.endswith("result.md")
+    assert result_payload.repo_summary.key_files == ["package.json", "pyproject.toml"]
+    assert "fastapi" in result_payload.detected_stack.frameworks
+    assert "react" in result_payload.detected_stack.frameworks
+    assert result_payload.backend_summary.routes[0].path == "/health"
+    assert result_payload.frontend_summary.api_calls[0].url == "/health"
+    assert result_payload.logic_summary.flows[0].backend_route == "/health"
+    assert result_payload.tutorial_summary.run_steps
+    assert "React UI" in result_payload.mermaid_sections.system
 
     events = await store.get_events("task-1")
     assert [event["stage"] for event in events] == [

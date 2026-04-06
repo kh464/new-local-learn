@@ -27,5 +27,6 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-q -p no:cacheprovider -p no:tmpdir"
 testpaths = ["tests"]
+norecursedirs = [".tmp", ".pytest-tmp", "tmpbase", "pytest-tmp"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
