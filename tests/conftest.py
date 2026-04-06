@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -34,9 +35,47 @@ async def fakeredis_client():
 
 
 @pytest_asyncio.fixture
-async def fake_job_context(fakeredis_client):
+async def fake_job_context(fakeredis_client, tmp_path: Path):
     store = RedisTaskStore(fakeredis_client)
-    return {"redis": fakeredis_client, "task_store": store}
+    repo_root = tmp_path / "source-repo"
+    repo_root.mkdir()
+    (repo_root / "app").mkdir()
+    (repo_root / "web").mkdir()
+    (repo_root / "app" / "main.py").write_text(
+        "from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get('/health')\nasync def health():\n    return {'ok': True}\n",
+        encoding="utf-8",
+    )
+    (repo_root / "web" / "App.tsx").write_text(
+        "import 'react-router-dom'\n\nfetch('/health')\n",
+        encoding="utf-8",
+    )
+    (repo_root / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n', encoding="utf-8")
+    (repo_root / "package.json").write_text('{"dependencies":{"react":"18.2.0"}}\n', encoding="utf-8")
+
+    settings = SimpleNamespace(
+        artifacts_dir=tmp_path / "artifacts",
+        max_file_count=2000,
+        max_file_bytes=50000,
+    )
+
+    async def clone_repo(github_url: str, destination):
+        return repo_root
+
+    async def read_files(repo_path: Path, file_list: list[str]) -> dict[str, str]:
+        contents: dict[str, str] = {}
+        for relative_path in file_list:
+            path = repo_path / relative_path
+            if path.is_file():
+                contents[relative_path] = path.read_text(encoding="utf-8")
+        return contents
+
+    return {
+        "redis": fakeredis_client,
+        "task_store": store,
+        "settings": settings,
+        "clone_repo": clone_repo,
+        "read_files": read_files,
+    }
 
 
 @pytest_asyncio.fixture

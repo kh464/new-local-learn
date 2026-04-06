@@ -35,3 +35,10 @@ class TaskStatus(BaseModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AnalysisResult(BaseModel):
+    github_url: str
+    repo_path: str
+    markdown_path: str
+    detected_stack: dict[str, list[str]]

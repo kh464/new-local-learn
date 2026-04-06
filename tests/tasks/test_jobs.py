@@ -29,7 +29,10 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
     assert status.progress == 100
 
     result_payload = await store.get_result("task-1")
-    assert result_payload == {"github_url": github_url}
+    assert result_payload["github_url"] == github_url
+    assert result_payload["markdown_path"].endswith("result.md")
+    assert "fastapi" in result_payload["detected_stack"]["frameworks"]
+    assert "react" in result_payload["detected_stack"]["frameworks"]
 
     events = await store.get_events("task-1")
     assert events == [
