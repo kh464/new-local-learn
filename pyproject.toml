@@ -6,11 +6,10 @@ build-backend = "hatchling.build"
 name = "github-doc-generator"
 version = "0.1.0"
 description = "Automation for generating technical documentation from GitHub repositories."
-readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.110.0",
-  "uvicorn>=0.27.0",
+  "uvicorn[standard]>=0.27.0",
   "pydantic>=2.6.0",
   "pydantic-settings>=2.2.0",
   "redis>=5.0.0",
@@ -24,3 +23,8 @@ dev = [
   "httpx>=0.27.0",
   "fakeredis>=2.21.0",
 ]
+
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider -p no:tmpdir -p app"
+testpaths = ["tests"]
+asyncio_mode = "auto"
