@@ -9,6 +9,10 @@ venv/
 .tmp/
 .tmpbase-root/
 .npm-cache/
+web/node_modules/
+web/dist/
+web/.tsbuild/
+web/*.tsbuildinfo
 pytest-cache-files-*/
 mode700-probe/
 artifacts/
