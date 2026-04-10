@@ -63,6 +63,7 @@ async def test_task_chat_endpoint_returns_graph_evidence_for_ready_task(
                     loop_count=2,
                     used_tools=["trace_call_chain", "open_file"],
                     fallback_used=False,
+                    search_queries=["health", "app/main.py"],
                 ),
             )
 
@@ -102,6 +103,7 @@ async def test_task_chat_endpoint_returns_graph_evidence_for_ready_task(
     assert payload["assistant_message"]["planner_metadata"]["planning_source"] == "llm"
     assert payload["assistant_message"]["planner_metadata"]["loop_count"] == 2
     assert payload["assistant_message"]["planner_metadata"]["used_tools"] == ["trace_call_chain", "open_file"]
+    assert payload["assistant_message"]["planner_metadata"]["search_queries"] == ["health", "app/main.py"]
 
     history_response = await api_client.get("/api/v1/tasks/task-chat-api/chat/messages")
     assert history_response.status_code == 200
@@ -111,6 +113,7 @@ async def test_task_chat_endpoint_returns_graph_evidence_for_ready_task(
     assert history_payload["messages"][1]["role"] == "assistant"
     assert history_payload["messages"][1]["graph_evidence"][0]["kind"] == "entrypoint"
     assert history_payload["messages"][1]["planner_metadata"]["planning_source"] == "llm"
+    assert history_payload["messages"][1]["planner_metadata"]["search_queries"] == ["health", "app/main.py"]
 
 
 @pytest.mark.asyncio

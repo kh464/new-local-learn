@@ -316,6 +316,22 @@ watch(
 
         <p class="task-chat__content">{{ message.content }}</p>
 
+        <div
+          v-if="message.role === 'assistant' && message.planner_metadata?.search_queries?.length"
+          class="task-chat__planner-debug"
+        >
+          <h4>规划检索词</h4>
+          <div class="task-chat__planner-query-list">
+            <span
+              v-for="query in message.planner_metadata.search_queries"
+              :key="query"
+              class="task-chat__planner-query"
+            >
+              {{ query }}
+            </span>
+          </div>
+        </div>
+
         <div v-if="message.graph_evidence?.length" class="task-chat__graph">
           <h4>认知图线索</h4>
           <template v-for="(items, groupName) in groupGraphEvidence(message.graph_evidence)" :key="groupName">
@@ -404,6 +420,7 @@ watch(
 
 .task-chat__header,
 .task-chat__state,
+.task-chat__planner-debug,
 .task-chat__graph,
 .task-chat__graph-group,
 .task-chat__citations,
@@ -421,6 +438,7 @@ watch(
 .task-chat__error,
 .task-chat__role,
 .task-chat__content,
+.task-chat__planner-debug h4,
 .task-chat__graph h4,
 .task-chat__graph-item p,
 .task-chat__citation p,
@@ -534,6 +552,30 @@ watch(
   border-radius: 14px;
   background: rgba(234, 179, 8, 0.08);
   border: 1px solid rgba(234, 179, 8, 0.18);
+}
+
+.task-chat__planner-debug {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.task-chat__planner-query-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-chat__planner-query {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--text);
 }
 
 .task-chat__graph-group {

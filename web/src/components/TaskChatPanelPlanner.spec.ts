@@ -37,14 +37,14 @@ describe('TaskChatPanel planner metadata', () => {
     fetchTaskChatMessagesMock.mockReset()
   })
 
-  it('shows both answer source and planning source badges for assistant messages', async () => {
+  it('shows planner debug metadata including search queries for assistant messages', async () => {
     fetchTaskChatMessagesMock.mockResolvedValue({
       task_id: 'task-chat-planner',
       messages: [
         {
           message_id: 'assistant-1',
           role: 'assistant',
-          content: '这是一次基于真实代码证据的保守回答。',
+          content: '这是一条基于真实代码证据的保守回答。',
           citations: [],
           graph_evidence: [],
           supplemental_notes: [],
@@ -55,6 +55,7 @@ describe('TaskChatPanel planner metadata', () => {
             loop_count: 1,
             used_tools: ['load_repo_map'],
             fallback_used: true,
+            search_queries: ['知识库', 'knowledge', 'retriever'],
           },
           created_at: '2026-04-09T10:00:01Z',
         },
@@ -72,5 +73,8 @@ describe('TaskChatPanel planner metadata', () => {
 
     expect(wrapper.text()).toContain('LLM')
     expect(wrapper.text()).toContain('规则规划')
+    expect(wrapper.text()).toContain('知识库')
+    expect(wrapper.text()).toContain('knowledge')
+    expect(wrapper.text()).toContain('retriever')
   })
 })

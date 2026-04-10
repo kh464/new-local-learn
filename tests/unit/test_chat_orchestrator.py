@@ -18,12 +18,14 @@ def test_task_chat_response_accepts_planner_metadata():
             loop_count=2,
             used_tools=["search_code", "open_file"],
             fallback_used=False,
+            search_queries=["login", "auth"],
         ),
     )
 
     assert response.planner_metadata is not None
     assert response.planner_metadata.planning_source == "llm"
     assert response.planner_metadata.used_tools == ["search_code", "open_file"]
+    assert response.planner_metadata.search_queries == ["login", "auth"]
 
 
 def test_agent_tool_call_normalizes_mcp_shape():
@@ -99,6 +101,25 @@ class _StubGateway:
         )
 
 
+class _SearchGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def list_tools(self):
+        return [{"name": "search_code", "description": "search", "inputSchema": {"type": "object"}}]
+
+    async def call_tool(self, name: str, arguments: dict[str, object]):
+        self.calls.append((name, arguments))
+        assert name == "search_code"
+        assert arguments == {"query": "知识库 knowledge retriever repo_map"}
+        return AgentObservation(
+            tool_name="search_code",
+            success=True,
+            summary="found knowledge files",
+            payload={"hits": [{"path": "app/services/knowledge/retriever.py", "title": "KnowledgeRetriever"}]},
+        )
+
+
 class _StubAssembler:
     def assemble(self, *, question, planning_source, observations):
         from app.services.chat.models import EvidenceItem, EvidencePack
@@ -166,6 +187,40 @@ class _NeverReadyPlanner:
         )
 
 
+class _SearchPlanner:
+    async def plan(self, **kwargs):
+        from app.services.chat.models import PlannerResult
+
+        observations = kwargs["observations"]
+        if observations:
+            return PlannerResult(
+                inferred_intent="确认仓库是否实现知识库能力",
+                answer_depth="detailed",
+                current_hypothesis="已有足够证据",
+                normalized_question="确认仓库是否实现知识库能力",
+                retrieval_objective="定位知识库能力相关实现与入口",
+                search_queries=["知识库", "knowledge", "retriever", "repo_map"],
+                gaps=[],
+                ready_to_answer=True,
+                tool_call=None,
+            )
+        return PlannerResult(
+            inferred_intent="确认仓库是否实现知识库能力",
+            answer_depth="detailed",
+            current_hypothesis="需要先定位知识库相关实现",
+            normalized_question="确认仓库是否实现知识库能力",
+            retrieval_objective="定位知识库能力相关实现与入口",
+            search_queries=["知识库", "knowledge", "retriever", "repo_map"],
+            gaps=["尚未定位知识库实现"],
+            ready_to_answer=False,
+            tool_call=AgentToolCall(
+                name="search_code",
+                arguments={"query": "仓库是否具有知识库"},
+                reason="先搜索知识库相关实现",
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_returns_planner_metadata_for_ready_answer():
     from app.services.chat.orchestrator import TaskChatOrchestrator
@@ -224,6 +279,35 @@ async def test_orchestrator_executes_tool_loop_and_records_used_tools():
     assert response.graph_evidence[0].kind == "call_chain"
     assert gateway.calls == [("trace_call_chain", {"query": "/health"})]
     assert response.answer_source == "local"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_prefers_normalized_search_queries_for_search_tool():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+
+    gateway = _SearchGateway()
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=_SearchPlanner(),
+        fallback_planner=None,
+        mcp_gateway=gateway,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+    )
+
+    response = await orchestrator.answer_question(
+        task_id="task-search",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="仓库是否具有具有知识库",
+        history=[],
+    )
+
+    assert response.planner_metadata is not None
+    assert response.planner_metadata.loop_count == 2
+    assert response.planner_metadata.used_tools == ["search_code"]
+    assert response.planner_metadata.search_queries == ["知识库", "knowledge", "retriever", "repo_map"]
+    assert gateway.calls == [("search_code", {"query": "知识库 knowledge retriever repo_map"})]
 
 
 @pytest.mark.asyncio

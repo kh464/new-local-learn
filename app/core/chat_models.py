@@ -6,3 +6,4 @@ class PlannerMetadata(BaseModel):
     loop_count: int = 0
     used_tools: list[str] = Field(default_factory=list)
     fallback_used: bool = False
+    search_queries: list[str] = Field(default_factory=list)

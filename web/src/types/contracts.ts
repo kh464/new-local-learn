@@ -71,6 +71,7 @@ export interface PlannerMetadata {
   loop_count: number
   used_tools: string[]
   fallback_used: boolean
+  search_queries: string[]
 }
 
 export interface TaskChatMessage {
@@ -354,7 +355,8 @@ function isPlannerMetadata(value: unknown): value is PlannerMetadata {
     typeof value.planning_source === 'string' &&
     isNumber(value.loop_count) &&
     isStringArray(value.used_tools) &&
-    typeof value.fallback_used === 'boolean'
+    typeof value.fallback_used === 'boolean' &&
+    isStringArray(value.search_queries)
   )
 }
 

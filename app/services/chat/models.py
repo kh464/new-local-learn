@@ -21,6 +21,9 @@ class PlannerResult(BaseModel):
     answer_depth: str
     current_hypothesis: str
     gaps: list[str] = Field(default_factory=list)
+    normalized_question: str = ""
+    retrieval_objective: str = ""
+    search_queries: list[str] = Field(default_factory=list)
     ready_to_answer: bool = False
     tool_call: AgentToolCall | None = None
 

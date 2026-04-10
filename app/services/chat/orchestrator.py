@@ -84,7 +84,8 @@ class TaskChatOrchestrator:
             if loop_index >= self._max_loops - 1:
                 break
 
-            observation = await self._mcp_gateway.call_tool(plan.tool_call.name, plan.tool_call.arguments)
+            tool_arguments = self._normalize_tool_arguments(plan)
+            observation = await self._mcp_gateway.call_tool(plan.tool_call.name, tool_arguments)
             observations.append(observation)
             used_tools.append(observation.tool_name)
 
@@ -119,6 +120,7 @@ class TaskChatOrchestrator:
                 loop_count=loop_count,
                 used_tools=used_tools,
                 fallback_used=fallback_used,
+                search_queries=list(getattr(last_plan, "search_queries", []) or []),
             ),
         )
 
@@ -172,6 +174,18 @@ class TaskChatOrchestrator:
             "confidence": str(payload.get("confidence") or "medium"),
             "answer_source": answer_source,
         }
+
+    def _normalize_tool_arguments(self, plan: PlannerResult) -> dict[str, object]:
+        if plan.tool_call is None:
+            return {}
+
+        arguments = dict(plan.tool_call.arguments)
+        if plan.tool_call.name == "search_code" and plan.search_queries:
+            arguments["query"] = " ".join(query.strip() for query in plan.search_queries if query and query.strip())
+        elif plan.tool_call.name == "trace_call_chain":
+            if not arguments.get("query") and plan.normalized_question:
+                arguments["query"] = plan.normalized_question
+        return arguments
 
     async def _validate_answer(
         self,

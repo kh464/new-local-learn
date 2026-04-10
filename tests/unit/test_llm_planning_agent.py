@@ -6,10 +6,13 @@ from app.services.chat.llm_planning_agent import LlmPlanningAgent
 class StubClient:
     def __init__(self, response: dict[str, object] | None = None) -> None:
         self.response = response or {
-            "inferred_intent": "定位登录功能并逐步讲解",
+            "inferred_intent": "定位登录能力并逐步讲解",
             "answer_depth": "code_walkthrough",
             "current_hypothesis": "需要先定位登录入口文件",
             "gaps": ["尚未定位登录入口文件"],
+            "normalized_question": "确认项目登录能力的实现位置",
+            "retrieval_objective": "定位登录相关入口、处理函数和认证实现",
+            "search_queries": ["登录", "login", "auth", "signin"],
             "ready_to_answer": False,
             "tool_call": {
                 "name": "search_code",
@@ -42,9 +45,47 @@ async def test_llm_planning_agent_returns_tool_call():
     assert result.tool_call is not None
     assert result.tool_call.name == "search_code"
     assert result.answer_depth == "code_walkthrough"
+    assert result.normalized_question == "确认项目登录能力的实现位置"
+    assert result.retrieval_objective == "定位登录相关入口、处理函数和认证实现"
+    assert result.search_queries == ["登录", "login", "auth", "signin"]
     assert "必须严格输出 JSON" in client.last_system_prompt
-    assert "tool_call.name 必须只能使用 available_tools 中提供的工具名" in client.last_system_prompt
+    assert "tool_call.name 必须只能使用 available_tools" in client.last_system_prompt
     assert '"available_tools": ["search_code", "open_file"]' in client.last_user_prompt
+
+
+@pytest.mark.asyncio
+async def test_llm_planning_agent_normalizes_missing_retrieval_fields():
+    client = StubClient(
+        {
+            "inferred_intent": "确认仓库是否实现知识库能力",
+            "answer_depth": "detailed",
+            "current_hypothesis": "需要先定位知识库相关模块",
+            "gaps": ["尚未定位知识库实现模块"],
+            "ready_to_answer": False,
+            "tool_call": {
+                "name": "search_code",
+                "arguments": {"query": "仓库是否具有知识库"},
+                "reason": "先定位知识库能力相关实现",
+            },
+        }
+    )
+    agent = LlmPlanningAgent(client=client)
+
+    result = await agent.plan(
+        question="仓库是否具有具有知识库",
+        history=[],
+        observations=[],
+        available_tools=["search_code", "open_file"],
+        loop_count=0,
+        remaining_loops=5,
+    )
+
+    assert "normalized_question" in client.last_system_prompt
+    assert "retrieval_objective" in client.last_system_prompt
+    assert "search_queries" in client.last_system_prompt
+    assert result.normalized_question == "仓库是否具有具有知识库"
+    assert result.retrieval_objective == "确认仓库是否实现知识库能力"
+    assert "知识库" in result.search_queries
 
 
 @pytest.mark.asyncio
