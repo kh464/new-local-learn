@@ -7,12 +7,12 @@ describe('TaskErrorState', () => {
   it('renders the provided title and message', () => {
     const wrapper = mount(TaskErrorState, {
       props: {
-        title: 'Task failed',
-        message: 'Repository clone failed.',
+        title: '任务失败',
+        message: '仓库克隆失败。',
       },
     })
 
-    expect(wrapper.text()).toContain('Task failed')
-    expect(wrapper.text()).toContain('Repository clone failed.')
+    expect(wrapper.text()).toContain('任务失败')
+    expect(wrapper.text()).toContain('仓库克隆失败。')
   })
 })

@@ -5,7 +5,6 @@ const model = defineModel<string>({ default: '' })
 
 const props = defineProps<{
   pending: boolean
-  error?: string
 }>()
 
 const emit = defineEmits<{
@@ -15,13 +14,17 @@ const emit = defineEmits<{
 const isDisabled = computed(() => props.pending || model.value.trim().length === 0)
 
 function onSubmit() {
+  if (isDisabled.value) {
+    return
+  }
+
   emit('submit')
 }
 </script>
 
 <template>
   <form class="repo-submit" @submit.prevent="onSubmit">
-    <label class="repo-submit__label" for="github-url">GitHub repository URL</label>
+    <label class="repo-submit__label" for="github-url">GitHub 仓库地址</label>
     <input
       id="github-url"
       v-model="model"
@@ -32,7 +35,7 @@ function onSubmit() {
       placeholder="https://github.com/octocat/Hello-World"
     />
     <button class="repo-submit__button" type="submit" :disabled="isDisabled">
-      {{ props.pending ? 'Submitting...' : 'Analyze Repository' }}
+      {{ props.pending ? '提交中...' : '开始分析' }}
     </button>
   </form>
 </template>

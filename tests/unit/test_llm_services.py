@@ -46,6 +46,17 @@ llm:
     assert runtime_config.provider.generation.max_tokens == 700
 
 
+def test_tutor_composer_returns_chinese_guidance():
+    from app.services.analyzers.tutor_composer import TutorComposer
+
+    tutorial = TutorComposer().compose({"frameworks": ["fastapi", "vue"]}, {"flows": [{"backend_route": "/api/v1/analyze"}]})
+
+    assert tutorial["mental_model"] == "把这个项目理解为由 fastapi, vue 组成的一条处理链路。"
+    assert tutorial["run_steps"][0].startswith("先找到")
+    assert tutorial["pitfalls"][0].startswith("不要想当然")
+    assert tutorial["self_check_questions"][0].startswith("入口")
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_client_uses_profile_configuration():
     requests: list[httpx.Request] = []
@@ -101,3 +112,37 @@ async def test_chat_completion_client_uses_profile_configuration():
     assert payload["model"] == "demo-model"
     assert payload["temperature"] == 0.4
     assert payload["max_tokens"] == 600
+
+
+@pytest.mark.asyncio
+async def test_tutorial_llm_enhancer_requires_chinese_output():
+    captured: dict[str, str] = {}
+
+    class StubClient:
+        async def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict[str, object]:
+            captured["system_prompt"] = system_prompt
+            captured["user_prompt"] = user_prompt
+            return {
+                "mental_model": "LLM mental model",
+                "run_steps": ["step 1", "step 2", "step 3"],
+                "pitfalls": ["pitfall 1", "pitfall 2"],
+                "self_check_questions": ["question 1", "question 2", "question 3"],
+            }
+
+    from app.services.llm.report_enhancer import TutorialLLMEnhancer
+
+    enhancer = TutorialLLMEnhancer(StubClient())
+
+    with pytest.raises(ValueError, match="Chinese"):
+        await enhancer.generate_tutorial(
+            repo_summary={"name": "demo", "key_files": ["app/main.py"], "file_count": 1},
+            detected_stack={"frameworks": ["fastapi"], "languages": ["python"]},
+            backend_summary={"routes": []},
+            frontend_summary={"framework": "vue", "routing": [], "api_calls": [], "state_units": [], "components": []},
+            logic_summary={"flows": []},
+            file_contents={"app/main.py": "from fastapi import FastAPI"},
+        )
+
+    assert "简体中文" in captured["system_prompt"]
+    assert "所有字段的值都必须使用简体中文" in captured["system_prompt"]
+    assert "必须输出中文" in captured["user_prompt"]

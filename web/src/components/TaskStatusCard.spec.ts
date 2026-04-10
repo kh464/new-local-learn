@@ -20,8 +20,8 @@ describe('TaskStatusCard', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('running')
-    expect(wrapper.text()).toContain('detect_stack')
+    expect(wrapper.text()).toContain('执行中')
+    expect(wrapper.text()).toContain('识别技术栈')
     expect(wrapper.text()).toContain('35%')
   })
 })

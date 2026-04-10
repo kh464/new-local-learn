@@ -47,26 +47,26 @@ describe('AnalysisResultView', () => {
           },
           logic_summary: { flows: [] },
           tutorial_summary: {
-            mental_model: 'A simple flow',
-            request_lifecycle: ['Request starts in HomePage', 'Backend handles POST /api/v1/analyze'],
-            run_steps: ['uvicorn app.main:app'],
-            pitfalls: ['Redis offline'],
-            next_steps: ['Trace POST /api/v1/analyze through the backend'],
-            self_check_questions: ['What runs first?'],
-            faq_entries: [{ question: 'Where do I start?', answer: 'Start with app/main.py.' }],
+            mental_model: '这是一条简单的调用链路。',
+            request_lifecycle: ['请求从 HomePage 发起', '后端处理 POST /api/v1/analyze'],
+            run_steps: ['运行 uvicorn app.main:app'],
+            pitfalls: ['Redis 离线会导致任务无法继续'],
+            next_steps: ['继续跟踪 POST /api/v1/analyze 在后端的实现'],
+            self_check_questions: ['最先启动的模块是什么？'],
+            faq_entries: [{ question: '应该从哪里开始？', answer: '先看 app/main.py。' }],
             code_walkthroughs: [
               {
-                title: 'Backend walkthrough: main.py',
+                title: '后端走读：main.py',
                 source_file: 'app/main.py',
                 snippet: 'from fastapi import FastAPI',
-                notes: ['This creates the app instance.'],
+                notes: ['这里创建了应用实例。'],
               },
             ],
           },
           critique_summary: {
-            coverage_notes: ['Observed 1 deploy services.'],
-            inferred_sections: ['Frontend architecture was not detected; frontend notes are omitted.'],
-            missing_areas: ['No Kubernetes manifests detected.'],
+            coverage_notes: ['观察到 1 个部署服务。'],
+            inferred_sections: ['前端结构信息不足，因此这部分说明带有推断成分。'],
+            missing_areas: ['没有检测到更多 Kubernetes 清单。'],
           },
           mermaid_sections: { system: 'graph TD\nA-->B' },
           agent_metadata: {
@@ -96,35 +96,37 @@ describe('AnalysisResultView', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('fastapi')
-    expect(wrapper.text()).toContain('/health')
-    expect(wrapper.text()).toContain('pinia')
-    expect(wrapper.text()).toContain('counter')
-    expect(wrapper.text()).toContain('HomePage')
-    expect(wrapper.text()).toContain('Request Lifecycle')
-    expect(wrapper.text()).toContain('Code Walkthroughs')
-    expect(wrapper.text()).toContain('Pitfalls')
-    expect(wrapper.text()).toContain('Redis offline')
-    expect(wrapper.text()).toContain('FAQ')
-    expect(wrapper.text()).toContain('Where do I start?')
-    expect(wrapper.text()).toContain('Next Steps')
-    expect(wrapper.text()).toContain('Self-Check')
-    expect(wrapper.text()).toContain('What runs first?')
-    expect(wrapper.text()).toContain('Deploy Analysis')
-    expect(wrapper.text()).toContain('redis')
-    expect(wrapper.text()).toContain('api')
-    expect(wrapper.text()).toContain('depends on redis')
-    expect(wrapper.text()).toContain('REDIS_URL')
-    expect(wrapper.text()).toContain('Deployment')
-    expect(wrapper.text()).toContain('api')
-    expect(wrapper.text()).toContain('Coverage Notes')
-    expect(wrapper.text()).toContain('No Kubernetes manifests detected.')
-    expect(wrapper.text()).toContain('Agent Execution')
-    expect(wrapper.text()).toContain('frontend, tutor')
-    expect(wrapper.text()).toContain('critic')
+    expect(wrapper.text()).toContain('项目概览')
+    expect(wrapper.text()).toContain('识别到的技术栈')
+    expect(wrapper.text()).toContain('后端分析')
+    expect(wrapper.text()).toContain('前端分析')
+    expect(wrapper.text()).toContain('部署分析')
+    expect(wrapper.text()).toContain('新手学习指南')
+    expect(wrapper.text()).toContain('覆盖说明')
+    expect(wrapper.text()).toContain('代理执行情况')
+    expect(wrapper.text()).toContain('框架：vue')
+    expect(wrapper.text()).toContain('构建工具：vite')
+    expect(wrapper.text()).toContain('状态管理：pinia')
+    expect(wrapper.text()).toContain('环境变量文件：.env.example')
+    expect(wrapper.text()).toContain('Kubernetes 清单：k8s/api.yaml')
+    expect(wrapper.text()).toContain('依赖 redis')
+    expect(wrapper.text()).toContain('请求生命周期')
+    expect(wrapper.text()).toContain('代码走读')
+    expect(wrapper.text()).toContain('常见陷阱')
+    expect(wrapper.text()).toContain('常见问题')
+    expect(wrapper.text()).toContain('下一步')
+    expect(wrapper.text()).toContain('自检问题')
+    expect(wrapper.text()).toContain('已启用：是')
+    expect(wrapper.text()).toContain('使用角色：frontend, tutor')
+    expect(wrapper.text()).toContain('兜底角色：critic')
     expect(wrapper.text()).toContain('frontend_analysis')
-    expect(wrapper.text()).toContain('result.html')
-    expect(wrapper.text()).toContain('result.pdf')
+    expect(wrapper.text()).toContain('已完成')
+    expect(wrapper.text()).toContain('助手')
+    expect(wrapper.text()).toContain('确定性')
+    expect(wrapper.text()).toContain('下载 HTML')
+    expect(wrapper.text()).toContain('下载 PDF')
+    expect(wrapper.text()).toContain('教程生成状态')
+    expect(wrapper.text()).toContain('大模型生成')
   })
 
   it('renders the markdown artifact path and diagram source separately', () => {
@@ -158,7 +160,7 @@ describe('AnalysisResultView', () => {
           },
           logic_summary: { flows: [] },
           tutorial_summary: {
-            mental_model: 'Simple flow',
+            mental_model: '这是一条简单的调用链路。',
             request_lifecycle: [],
             run_steps: [],
             pitfalls: [],
@@ -177,10 +179,10 @@ describe('AnalysisResultView', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('Markdown Artifact Path')
-    expect(wrapper.text()).toContain('HTML Artifact Path')
-    expect(wrapper.text()).toContain('PDF Artifact Path')
-    expect(wrapper.text()).toContain('System Diagram Source')
+    expect(wrapper.text()).toContain('Markdown 产物路径')
+    expect(wrapper.text()).toContain('HTML 产物路径')
+    expect(wrapper.text()).toContain('PDF 产物路径')
+    expect(wrapper.text()).toContain('系统图源码')
   })
 
   it('renders direct artifact download links', () => {
@@ -214,7 +216,7 @@ describe('AnalysisResultView', () => {
           },
           logic_summary: { flows: [] },
           tutorial_summary: {
-            mental_model: 'Simple flow',
+            mental_model: '这是一条简单的调用链路。',
             request_lifecycle: [],
             run_steps: [],
             pitfalls: [],
@@ -274,7 +276,7 @@ describe('AnalysisResultView', () => {
           },
           logic_summary: { flows: [] },
           tutorial_summary: {
-            mental_model: 'Simple flow',
+            mental_model: '这是一条简单的调用链路。',
             request_lifecycle: [],
             run_steps: [],
             pitfalls: [],
@@ -295,5 +297,76 @@ describe('AnalysisResultView', () => {
 
     expect(wrapper.findAll('button[data-artifact-button]')).toHaveLength(3)
     expect(wrapper.findAll('a[data-artifact-link]')).toHaveLength(0)
+  })
+
+  it('renders tutorial fallback status and reason when llm generation falls back', () => {
+    const wrapper = mount(AnalysisResultView, {
+      props: {
+        taskId: 'task-fallback',
+        result: {
+          github_url: 'https://github.com/octocat/Hello-World',
+          repo_path: 'artifacts/task-fallback/repo',
+          markdown_path: 'artifacts/task-fallback/result.md',
+          html_path: 'artifacts/task-fallback/result.html',
+          pdf_path: 'artifacts/task-fallback/result.pdf',
+          repo_summary: { name: 'Hello-World', files: [], key_files: [], file_count: 0 },
+          detected_stack: { frameworks: ['fastapi'], languages: ['py'] },
+          backend_summary: { routes: [] },
+          frontend_summary: {
+            framework: 'vue',
+            bundler: 'vite',
+            state_manager: null,
+            routing: [],
+            api_calls: [],
+            state_units: [],
+            components: [],
+          },
+          deploy_summary: {
+            services: [],
+            environment_files: [],
+            environment_variables: [],
+            manifests: [],
+            kubernetes_resources: [],
+          },
+          logic_summary: { flows: [] },
+          tutorial_summary: {
+            mental_model: '这是兜底后的中文教程。',
+            request_lifecycle: [],
+            run_steps: [],
+            pitfalls: [],
+            next_steps: [],
+            self_check_questions: [],
+            faq_entries: [],
+            code_walkthroughs: [],
+          },
+          critique_summary: {
+            coverage_notes: [],
+            inferred_sections: [],
+            missing_areas: [],
+          },
+          mermaid_sections: { system: 'graph TD\nA-->B' },
+          agent_metadata: {
+            enabled: true,
+            used_roles: ['tutor'],
+            fallbacks: ['tutorial_generation'],
+            execution_nodes: [
+              {
+                node: 'tutorial_generation',
+                stage: 'build_doc',
+                kind: 'llm',
+                status: 'fallback',
+                execution_mode: 'fallback',
+                depends_on: ['logic_mapping'],
+                reason: 'LLM tutorial output must be Chinese.',
+              },
+            ],
+          },
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('教程生成状态')
+    expect(wrapper.text()).toContain('已回退到内置生成')
+    expect(wrapper.text()).toContain('LLM tutorial output must be Chinese.')
   })
 })

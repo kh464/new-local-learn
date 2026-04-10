@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from app.core.chat_models import PlannerMetadata
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class TaskState(str, Enum):
@@ -19,7 +21,15 @@ class TaskStage(str, Enum):
     ANALYZE_BACKEND = "analyze_backend"
     ANALYZE_FRONTEND = "analyze_frontend"
     BUILD_DOC = "build_doc"
+    BUILD_KNOWLEDGE = "build_knowledge"
     FINALIZE = "finalize"
+
+
+class TaskKnowledgeState(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
 
 
 class AnalyzeRequest(BaseModel):
@@ -33,8 +43,71 @@ class TaskStatus(BaseModel):
     progress: int = Field(default=0, ge=0, le=100)
     message: str | None = None
     error: str | None = None
+    knowledge_state: TaskKnowledgeState = TaskKnowledgeState.PENDING
+    knowledge_error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TaskChatCitation(BaseModel):
+    path: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    reason: str
+    snippet: str
+
+
+class TaskGraphEvidence(BaseModel):
+    kind: Literal["entrypoint", "symbol", "edge", "call_chain"]
+    label: str
+    detail: str | None = None
+    path: str | None = None
+
+
+class TaskChatMessage(BaseModel):
+    message_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    citations: list[TaskChatCitation] = Field(default_factory=list)
+    graph_evidence: list[TaskGraphEvidence] = Field(default_factory=list)
+    supplemental_notes: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] | None = None
+    answer_source: Literal["llm", "local"] | None = None
+    planner_metadata: PlannerMetadata | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TaskChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("question")
+    @classmethod
+    def _normalize_question(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Question must not be blank.")
+        return normalized
+
+
+class TaskChatResponse(BaseModel):
+    answer: str
+    citations: list[TaskChatCitation] = Field(default_factory=list)
+    graph_evidence: list[TaskGraphEvidence] = Field(default_factory=list)
+    supplemental_notes: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    answer_source: Literal["llm", "local"] = "local"
+    planner_metadata: PlannerMetadata | None = None
+
+
+class TaskChatExchange(BaseModel):
+    task_id: str
+    user_message: TaskChatMessage
+    assistant_message: TaskChatMessage
+
+
+class TaskChatHistory(BaseModel):
+    task_id: str
+    messages: list[TaskChatMessage] = Field(default_factory=list)
 
 
 class TaskListItem(TaskStatus):

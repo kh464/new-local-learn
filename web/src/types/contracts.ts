@@ -8,7 +8,10 @@ export type TaskStage =
   | 'analyze_backend'
   | 'analyze_frontend'
   | 'build_doc'
+  | 'build_knowledge'
   | 'finalize'
+
+export type TaskKnowledgeState = 'pending' | 'running' | 'ready' | 'failed'
 
 export interface TaskStatus {
   task_id: string
@@ -17,6 +20,8 @@ export interface TaskStatus {
   progress: number
   message: string | null
   error: string | null
+  knowledge_state?: TaskKnowledgeState | null
+  knowledge_error?: string | null
   created_at: string
   updated_at: string
 }
@@ -44,6 +49,52 @@ export interface AnalysisTaskResponse {
   result_url: string
   stream_url: string
   task_token: string
+}
+
+export interface TaskChatCitation {
+  path: string
+  start_line: number
+  end_line: number
+  reason: string
+  snippet: string
+}
+
+export interface TaskGraphEvidence {
+  kind: 'entrypoint' | 'symbol' | 'edge' | 'call_chain'
+  label: string
+  detail?: string | null
+  path?: string | null
+}
+
+export interface PlannerMetadata {
+  planning_source: string
+  loop_count: number
+  used_tools: string[]
+  fallback_used: boolean
+}
+
+export interface TaskChatMessage {
+  message_id: string
+  role: 'user' | 'assistant'
+  content: string
+  citations: TaskChatCitation[]
+  graph_evidence?: TaskGraphEvidence[]
+  supplemental_notes: string[]
+  confidence?: 'high' | 'medium' | 'low' | null
+  answer_source?: 'llm' | 'local' | null
+  planner_metadata?: PlannerMetadata | null
+  created_at: string
+}
+
+export interface TaskChatHistory {
+  task_id: string
+  messages: TaskChatMessage[]
+}
+
+export interface TaskChatExchange {
+  task_id: string
+  user_message: TaskChatMessage
+  assistant_message: TaskChatMessage
 }
 
 export interface RepositorySummary {
@@ -191,6 +242,8 @@ export interface TaskStreamEvent {
   node?: string
   message?: string
   error?: string
+  knowledge_state?: TaskKnowledgeState
+  knowledge_error?: string
 }
 
 export interface AuditEvent {
@@ -238,9 +291,11 @@ export const taskStages = [
   'analyze_backend',
   'analyze_frontend',
   'build_doc',
+  'build_knowledge',
   'finalize',
 ] as const
-const taskStreamEventKeys = ['state', 'stage', 'progress', 'node', 'message', 'error'] as const
+export const taskKnowledgeStates = ['pending', 'running', 'ready', 'failed'] as const
+const taskStreamEventKeys = ['state', 'stage', 'progress', 'node', 'message', 'error', 'knowledge_state', 'knowledge_error'] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -269,6 +324,62 @@ function isRepositorySummary(value: unknown): value is RepositorySummary {
     isStringArray(value.files) &&
     isStringArray(value.key_files) &&
     typeof value.file_count === 'number'
+  )
+}
+
+function isTaskChatCitation(value: unknown): value is TaskChatCitation {
+  return (
+    isRecord(value) &&
+    typeof value.path === 'string' &&
+    isNumber(value.start_line) &&
+    isNumber(value.end_line) &&
+    typeof value.reason === 'string' &&
+    typeof value.snippet === 'string'
+  )
+}
+
+function isTaskGraphEvidence(value: unknown): value is TaskGraphEvidence {
+  return (
+    isRecord(value) &&
+    (value.kind === 'entrypoint' || value.kind === 'symbol' || value.kind === 'edge' || value.kind === 'call_chain') &&
+    typeof value.label === 'string' &&
+    (value.detail === undefined || isNullableString(value.detail)) &&
+    (value.path === undefined || isNullableString(value.path))
+  )
+}
+
+function isPlannerMetadata(value: unknown): value is PlannerMetadata {
+  return (
+    isRecord(value) &&
+    typeof value.planning_source === 'string' &&
+    isNumber(value.loop_count) &&
+    isStringArray(value.used_tools) &&
+    typeof value.fallback_used === 'boolean'
+  )
+}
+
+function isTaskChatMessage(value: unknown): value is TaskChatMessage {
+  return (
+    isRecord(value) &&
+    typeof value.message_id === 'string' &&
+    (value.role === 'user' || value.role === 'assistant') &&
+    typeof value.content === 'string' &&
+    isRecordArray(value.citations, isTaskChatCitation) &&
+    (value.graph_evidence === undefined || isRecordArray(value.graph_evidence, isTaskGraphEvidence)) &&
+    isStringArray(value.supplemental_notes) &&
+    (value.confidence === undefined ||
+      value.confidence === null ||
+      value.confidence === 'high' ||
+      value.confidence === 'medium' ||
+      value.confidence === 'low') &&
+    (value.answer_source === undefined ||
+      value.answer_source === null ||
+      value.answer_source === 'llm' ||
+      value.answer_source === 'local') &&
+    (value.planner_metadata === undefined ||
+      value.planner_metadata === null ||
+      isPlannerMetadata(value.planner_metadata)) &&
+    typeof value.created_at === 'string'
   )
 }
 
@@ -427,6 +538,10 @@ export function isTaskStage(value: unknown): value is TaskStage {
   return typeof value === 'string' && taskStages.includes(value as TaskStage)
 }
 
+export function isTaskKnowledgeState(value: unknown): value is TaskKnowledgeState {
+  return typeof value === 'string' && taskKnowledgeStates.includes(value as TaskKnowledgeState)
+}
+
 export function isAnalysisTaskResponse(value: unknown): value is AnalysisTaskResponse {
   return (
     isRecord(value) &&
@@ -435,6 +550,19 @@ export function isAnalysisTaskResponse(value: unknown): value is AnalysisTaskRes
     typeof value.result_url === 'string' &&
     typeof value.stream_url === 'string' &&
     typeof value.task_token === 'string'
+  )
+}
+
+export function isTaskChatHistory(value: unknown): value is TaskChatHistory {
+  return isRecord(value) && typeof value.task_id === 'string' && isRecordArray(value.messages, isTaskChatMessage)
+}
+
+export function isTaskChatExchange(value: unknown): value is TaskChatExchange {
+  return (
+    isRecord(value) &&
+    typeof value.task_id === 'string' &&
+    isTaskChatMessage(value.user_message) &&
+    isTaskChatMessage(value.assistant_message)
   )
 }
 
@@ -447,6 +575,8 @@ export function isTaskStatus(value: unknown): value is TaskStatus {
     typeof value.progress === 'number' &&
     isNullableString(value.message) &&
     isNullableString(value.error) &&
+    (value.knowledge_state === undefined || value.knowledge_state === null || isTaskKnowledgeState(value.knowledge_state)) &&
+    (value.knowledge_error === undefined || isNullableString(value.knowledge_error)) &&
     typeof value.created_at === 'string' &&
     typeof value.updated_at === 'string'
   )
@@ -537,7 +667,9 @@ export function isTaskStreamEvent(value: unknown): value is TaskStreamEvent {
     (value.progress === undefined || typeof value.progress === 'number') &&
     (value.node === undefined || typeof value.node === 'string') &&
     (value.message === undefined || typeof value.message === 'string') &&
-    (value.error === undefined || typeof value.error === 'string')
+    (value.error === undefined || typeof value.error === 'string') &&
+    (value.knowledge_state === undefined || isTaskKnowledgeState(value.knowledge_state)) &&
+    (value.knowledge_error === undefined || typeof value.knowledge_error === 'string')
   )
 }
 

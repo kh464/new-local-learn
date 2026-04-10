@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { TaskStatus } from '../types/contracts'
+import { formatTaskStateZh, formatTaskStageZh } from '../presentation/copy'
 
 defineProps<{
   status: TaskStatus
@@ -8,10 +9,10 @@ defineProps<{
 
 <template>
   <section class="panel status-card">
-    <p class="status-card__label">Task {{ status.task_id }}</p>
-    <h3 class="status-card__state">{{ status.state }}</h3>
-    <p>Stage: {{ status.stage ?? 'waiting' }}</p>
-    <p>Progress: {{ status.progress }}%</p>
+    <p class="status-card__label">任务 {{ status.task_id }}</p>
+    <h3 class="status-card__state">{{ formatTaskStateZh(status.state) }}</h3>
+    <p>阶段：{{ formatTaskStageZh(status.stage) }}</p>
+    <p>总进度：{{ status.progress }}%</p>
     <p v-if="status.message">{{ status.message }}</p>
     <p v-else-if="status.error" class="status-card__error">{{ status.error }}</p>
   </section>
@@ -33,7 +34,6 @@ defineProps<{
 
 .status-card__state {
   margin: 0;
-  text-transform: capitalize;
 }
 
 .status-card p {

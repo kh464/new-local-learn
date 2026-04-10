@@ -31,9 +31,10 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
         TaskStage.ANALYZE_BACKEND,
         TaskStage.ANALYZE_FRONTEND,
         TaskStage.BUILD_DOC,
+        TaskStage.BUILD_KNOWLEDGE,
         TaskStage.FINALIZE,
     ]
-    assert [status.progress for status in seen_statuses] == [5, 20, 35, 50, 65, 85, 100]
+    assert [status.progress for status in seen_statuses] == [5, 20, 35, 50, 65, 85, 95, 100]
     assert seen_statuses[0].created_at == seen_statuses[1].created_at
 
     status = await store.get_status("task-1")
@@ -41,6 +42,7 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
     assert status.state is TaskState.SUCCEEDED
     assert status.stage is TaskStage.FINALIZE
     assert status.progress == 100
+    assert status.knowledge_state.value == "ready"
 
     result_payload = await store.get_result("task-1")
     assert result_payload.github_url == github_url
@@ -89,13 +91,104 @@ async def test_run_analysis_job_sets_succeeded(fake_job_context):
         TaskStage.ANALYZE_BACKEND.value,
         TaskStage.ANALYZE_FRONTEND.value,
         TaskStage.BUILD_DOC.value,
+        TaskStage.BUILD_KNOWLEDGE.value,
         TaskStage.FINALIZE.value,
     ]
-    assert [event["progress"] for event in events] == [5, 20, 35, 50, 65, 85, 100]
-    assert [event["state"] for event in events[:-1]] == [TaskState.RUNNING.value] * 6
+    assert [event["progress"] for event in events] == [5, 20, 35, 50, 65, 85, 95, 100]
+    assert [event["state"] for event in events[:-1]] == [TaskState.RUNNING.value] * 7
     assert events[-1]["state"] == TaskState.SUCCEEDED.value
     metrics = await store.get_metrics_snapshot()
     assert metrics["analysis_jobs_succeeded_total"] == 1
+
+
+async def test_run_analysis_job_builds_knowledge_after_docs(fake_job_context):
+    store = fake_job_context["task_store"]
+    seen_statuses = []
+    original_set_status = store.set_status
+    captured: dict[str, object] = {}
+    repo_map_captured: dict[str, object] = {}
+
+    async def set_status_spy(status):
+        seen_statuses.append(status)
+        await original_set_status(status)
+
+    class FakeKnowledgeBuilder:
+        def build(self, *, task_id: str, repo_path, db_path):
+            captured["task_id"] = task_id
+            captured["repo_path"] = Path(repo_path)
+            captured["db_path"] = Path(db_path)
+            Path(db_path).write_bytes(b"sqlite")
+            return {"indexed_documents": 3, "indexed_chunks": 4}
+
+    class FakeRepoMapBuilder:
+        def build(self, *, task_id: str, repo_path, output_path):
+            repo_map_captured["task_id"] = task_id
+            repo_map_captured["repo_path"] = Path(repo_path)
+            repo_map_captured["output_path"] = Path(output_path)
+            Path(output_path).write_text('{"task_id":"task-knowledge-ready"}', encoding="utf-8")
+            return {"task_id": task_id}
+
+    fake_job_context["knowledge_builder"] = FakeKnowledgeBuilder()
+    fake_job_context["repo_map_builder"] = FakeRepoMapBuilder()
+    store.set_status = set_status_spy
+
+    result = await run_analysis_job(fake_job_context, "task-knowledge-ready", "https://github.com/octocat/Hello-World")
+
+    assert result["state"] == TaskState.SUCCEEDED.value
+    assert [status.stage for status in seen_statuses] == [
+        TaskStage.FETCH_REPO,
+        TaskStage.SCAN_TREE,
+        TaskStage.DETECT_STACK,
+        TaskStage.ANALYZE_BACKEND,
+        TaskStage.ANALYZE_FRONTEND,
+        TaskStage.BUILD_DOC,
+        TaskStage.BUILD_KNOWLEDGE,
+        TaskStage.FINALIZE,
+    ]
+    assert [status.progress for status in seen_statuses] == [5, 20, 35, 50, 65, 85, 95, 100]
+    assert seen_statuses[6].knowledge_state.value == "running"
+    assert seen_statuses[7].knowledge_state.value == "ready"
+    assert captured["task_id"] == "task-knowledge-ready"
+    assert captured["repo_path"].is_dir() is True
+    assert captured["db_path"].name == "knowledge.db"
+    assert captured["db_path"].is_file() is True
+    assert repo_map_captured["task_id"] == "task-knowledge-ready"
+    assert repo_map_captured["repo_path"].is_dir() is True
+    assert repo_map_captured["output_path"].name == "repo_map.json"
+    assert repo_map_captured["output_path"].is_file() is True
+
+    final_status = await store.get_status("task-knowledge-ready")
+    assert final_status is not None
+    assert final_status.state is TaskState.SUCCEEDED
+    assert final_status.knowledge_state.value == "ready"
+    assert final_status.knowledge_error is None
+
+
+async def test_run_analysis_job_keeps_result_when_knowledge_build_fails(fake_job_context):
+    class FailingKnowledgeBuilder:
+        def build(self, *, task_id: str, repo_path, db_path):
+            raise RuntimeError("knowledge sqlite locked")
+
+    fake_job_context["knowledge_builder"] = FailingKnowledgeBuilder()
+
+    result = await run_analysis_job(fake_job_context, "task-knowledge-failed", "https://github.com/octocat/Hello-World")
+
+    assert result["state"] == TaskState.SUCCEEDED.value
+    store = fake_job_context["task_store"]
+    payload = await store.get_result("task-knowledge-failed")
+    assert payload is not None
+
+    final_status = await store.get_status("task-knowledge-failed")
+    assert final_status is not None
+    assert final_status.state is TaskState.SUCCEEDED
+    assert final_status.stage is TaskStage.FINALIZE
+    assert final_status.knowledge_state.value == "failed"
+    assert final_status.knowledge_error == "knowledge sqlite locked"
+
+    events = await store.get_events("task-knowledge-failed")
+    assert events[-2]["stage"] == TaskStage.BUILD_KNOWLEDGE.value
+    assert events[-2]["progress"] == 95
+    assert events[-1]["state"] == TaskState.SUCCEEDED.value
 
 
 async def test_run_analysis_job_prefers_configured_tutorial_generator(fake_job_context):
@@ -151,6 +244,8 @@ async def test_worker_startup_registers_runtime_dependencies(fakeredis_client):
     assert "task_store" in ctx
     assert callable(ctx["clone_repo"])
     assert callable(ctx["read_files"])
+    assert hasattr(ctx["knowledge_builder"], "build")
+    assert hasattr(ctx["repo_map_builder"], "build")
 
 
 async def test_worker_startup_clone_repo_uses_configured_timeout(fakeredis_client, monkeypatch):
@@ -324,3 +419,12 @@ async def test_run_analysis_job_marks_cancelled_when_cancel_requested_before_sta
     status = await store.get_status("task-cancelled")
     assert status is not None
     assert status.state is TaskState.CANCELLED
+    assert status.stage is TaskStage.FETCH_REPO
+
+    events = await store.get_events("task-cancelled")
+    assert events[-1] == {
+        "state": TaskState.CANCELLED.value,
+        "stage": TaskStage.FETCH_REPO.value,
+        "progress": 0,
+        "message": "Cancellation requested.",
+    }

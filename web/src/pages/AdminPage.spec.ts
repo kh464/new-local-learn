@@ -64,13 +64,16 @@ describe('AdminPage', () => {
 
     expect(fetchAuditEventsMock).toHaveBeenCalledWith({ limit: 25, offset: 0 })
     expect(fetchTaskListMock).toHaveBeenCalledWith({ limit: 8, offset: 0 })
-    expect(wrapper.text()).toContain('Operations Console')
+    expect(wrapper.text()).toContain('运维控制台')
+    expect(wrapper.text()).toContain('监控最近的审计活动和后台统计')
     expect(wrapper.text()).toContain('analyze_requests_total')
     expect(wrapper.text()).toContain('8')
     expect(wrapper.text()).toContain('analyze_submit')
     expect(wrapper.text()).toContain('/api/v1/analyze')
-    expect(wrapper.text()).toContain('Recent Tasks')
+    expect(wrapper.text()).toContain('最近任务')
     expect(wrapper.text()).toContain('task-ops-1')
+    expect(wrapper.text()).toContain('执行中')
+    expect(wrapper.text()).toContain('扫描目录')
   })
 
   it('applies audit filters and reloads the first page', async () => {
@@ -162,6 +165,22 @@ describe('AdminPage', () => {
       offset: 0,
       state: 'running',
     })
+  })
+
+  it('shows localized fallback when admin data loading rejects without Error', async () => {
+    fetchAuditEventsMock.mockRejectedValue('network failure')
+    fetchMetricsSnapshotMock.mockResolvedValue({})
+    fetchTaskListMock.mockResolvedValue({
+      total: 0,
+      limit: 8,
+      offset: 0,
+      tasks: [],
+    })
+
+    const wrapper = mount(AdminPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('加载管理数据失败。')
   })
 
   it('shows an error state when admin data loading fails', async () => {

@@ -5,7 +5,7 @@ import pytest
 import jwt
 from jwt.utils import base64url_encode
 
-from app.core.models import TaskState, TaskStatus
+from app.core.models import TaskStage, TaskState, TaskStatus
 from app.main import create_app
 from app.storage.task_store import RedisTaskStore
 
@@ -866,6 +866,27 @@ async def test_cancel_endpoint_marks_queued_task_cancelled(api_client, fakeredis
     assert status is not None
     assert status.state is TaskState.CANCELLED
     assert await store.is_task_cancel_requested("task-cancel") is True
+
+
+async def test_stop_endpoint_marks_running_task_as_stop_requested(api_client, fakeredis_client):
+    store = RedisTaskStore(fakeredis_client)
+    await store.set_status(
+        TaskStatus(
+            task_id="task-stop",
+            state=TaskState.RUNNING,
+            stage=TaskStage.SCAN_TREE,
+            progress=20,
+        )
+    )
+    await store.set_task_request("task-stop", {"github_url": "https://github.com/octocat/Hello-World"})
+    api_client._transport.app.state.task_store = store
+
+    response = await api_client.post("/api/v1/tasks/task-stop/stop")
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "running"
+    assert response.json()["message"] == "Cancellation requested."
+    assert await store.is_task_cancel_requested("task-stop") is True
 
 
 async def test_retry_endpoint_requeues_failed_task(api_client, fakeredis_client):

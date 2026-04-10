@@ -1,7 +1,14 @@
 from pathlib import Path
 
 from app.core.config import Settings
-from app.core.models import TaskStage, TaskState, TaskStatus
+from app.core.models import (
+    TaskChatResponse,
+    TaskGraphEvidence,
+    TaskKnowledgeState,
+    TaskStage,
+    TaskState,
+    TaskStatus,
+)
 from app.storage.artifacts import ArtifactPaths
 
 
@@ -19,7 +26,13 @@ def test_settings_and_models_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setenv("OIDC_SUBJECT_CLAIM", "preferred_username")
 
     settings = Settings()
-    status = TaskStatus(task_id="task-1", state=TaskState.RUNNING, stage=TaskStage.FETCH_REPO, progress=10)
+    status = TaskStatus(
+        task_id="task-1",
+        state=TaskState.RUNNING,
+        stage=TaskStage.BUILD_KNOWLEDGE,
+        progress=95,
+        knowledge_state=TaskKnowledgeState.RUNNING,
+    )
     paths = ArtifactPaths(base_dir=settings.artifacts_dir, task_id="task-1")
 
     assert settings.redis_url == "redis://localhost:6379/0"
@@ -47,5 +60,18 @@ def test_settings_and_models_bootstrap(tmp_path, monkeypatch):
     assert settings.oidc_subject_claim == "preferred_username"
     assert settings.allowed_github_hosts == ("github.com", "github.internal")
     assert settings.cors_allowed_origins == ("https://app.example.com", "https://admin.example.com")
-    assert status.stage is TaskStage.FETCH_REPO
+    assert status.stage is TaskStage.BUILD_KNOWLEDGE
+    assert status.knowledge_state is TaskKnowledgeState.RUNNING
     assert paths.markdown_path.name == "result.md"
+    assert paths.knowledge_db_path.name == "knowledge.db"
+
+
+def test_artifact_paths_and_chat_models_include_repo_map(tmp_path):
+    paths = ArtifactPaths(base_dir=tmp_path, task_id="task-1")
+    response = TaskChatResponse(
+        answer="示例",
+        graph_evidence=[TaskGraphEvidence(kind="call_chain", label="前端到后端调用链")],
+    )
+
+    assert paths.repo_map_path.name == "repo_map.json"
+    assert response.graph_evidence[0].kind == "call_chain"

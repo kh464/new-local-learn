@@ -11,7 +11,8 @@ const pending = ref(false)
 const error = ref<string | null>(null)
 
 async function handleSubmit() {
-  if (pending.value || githubUrl.value.trim().length === 0) {
+  const cleanedUrl = githubUrl.value.trim()
+  if (pending.value || cleanedUrl.length === 0) {
     return
   }
 
@@ -19,13 +20,13 @@ async function handleSubmit() {
   error.value = null
 
   try {
-    const task = await createAnalysisTask(githubUrl.value)
+    const task = await createAnalysisTask(cleanedUrl)
     await router.push(`/tasks/${task.task_id}`)
   } catch (submissionError) {
     if (submissionError instanceof Error) {
       error.value = submissionError.message
     } else {
-      error.value = 'Something went wrong. Please try again.'
+      error.value = '出现问题，请重试。'
     }
   } finally {
     pending.value = false
@@ -36,13 +37,12 @@ async function handleSubmit() {
 <template>
   <section class="home-hero">
     <div class="home-hero__panel">
-      <p class="home-hero__eyebrow">Submit a repository to start the analysis</p>
-      <h2 class="home-hero__title">Turn a GitHub project into a living tech brief.</h2>
+      <p class="home-hero__eyebrow">提交仓库以启动分析</p>
+      <h2 class="home-hero__title">将 GitHub 项目转化为实时技术简报。</h2>
       <p class="home-hero__subtitle">
-        Paste a repo URL and the workbench will generate a structured overview of architecture, flows,
-        and implementation details.
+        粘贴仓库 URL，工作台会生成架构、流程以及实现细节的结构化概览。
       </p>
-      <RepositorySubmitForm v-model="githubUrl" :pending="pending" :error="error ?? undefined" @submit="handleSubmit" />
+      <RepositorySubmitForm v-model="githubUrl" :pending="pending" @submit="handleSubmit" />
       <p v-if="error" class="home-hero__error" role="alert">{{ error }}</p>
     </div>
   </section>

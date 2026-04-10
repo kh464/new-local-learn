@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from app.core.models import AnalysisResult, TaskListItem, TaskListPage, TaskState, TaskStatus
+from app.core.models import TaskChatMessage
 
 
 class RedisTaskStore:
@@ -37,6 +38,9 @@ class RedisTaskStore:
 
     def _task_cancel_key(self, task_id: str) -> str:
         return f"{self._prefix}:{task_id}:cancel"
+
+    def _task_chat_key(self, task_id: str) -> str:
+        return f"{self._prefix}:{task_id}:chat"
 
     def _task_index_key(self) -> str:
         return f"{self._prefix}:index:tasks"
@@ -86,6 +90,22 @@ class RedisTaskStore:
         result = await self._client.rpush(key, payload)
         await self._apply_ttl(key)
         return result
+
+    async def append_chat_message(self, task_id: str, message: TaskChatMessage | dict[str, Any]) -> int:
+        validated = TaskChatMessage.model_validate(message)
+        key = self._task_chat_key(task_id)
+        result = await self._client.rpush(key, validated.model_dump_json())
+        await self._apply_ttl(key)
+        return result
+
+    async def get_chat_messages(self, task_id: str) -> list[TaskChatMessage]:
+        raw_messages = await self._client.lrange(self._task_chat_key(task_id), 0, -1)
+        messages: list[TaskChatMessage] = []
+        for raw in raw_messages:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            messages.append(TaskChatMessage.model_validate_json(raw))
+        return messages
 
     async def get_events(self, task_id: str) -> list[dict[str, Any]]:
         raw_events = await self._client.lrange(self._events_key(task_id), 0, -1)
@@ -158,6 +178,7 @@ class RedisTaskStore:
             self._task_access_key(task_id),
             self._task_request_key(task_id),
             self._task_cancel_key(task_id),
+            self._task_chat_key(task_id),
         )
 
     async def ping(self) -> bool:

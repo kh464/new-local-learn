@@ -5,12 +5,15 @@ import {
   cancelTask,
   createAnalysisTask,
   downloadTaskArtifact,
+  fetchTaskChatMessages,
   fetchAuditEvents,
   fetchMetricsSnapshot,
   fetchTaskList,
   fetchTaskResult,
   fetchTaskStatus,
   retryTask,
+  stopTask,
+  submitTaskQuestion,
 } from './api'
 import { clearTaskTokens } from './taskAccess'
 
@@ -198,6 +201,118 @@ describe('api service', () => {
 
     expect(result.task_id).toBe('task-1')
     expect(result.message).toBe('Cancellation requested.')
+  })
+
+  it('stops an in-flight task through the stop endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      text: async () =>
+        JSON.stringify({
+          task_id: 'task-9',
+          state: 'running',
+          stage: 'scan_tree',
+          progress: 35,
+          message: 'Cancellation requested.',
+          error: null,
+          created_at: '2026-04-06T10:00:00Z',
+          updated_at: '2026-04-06T10:01:00Z',
+        }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await stopTask('task-9')
+
+    expect(result.task_id).toBe('task-9')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/tasks/task-9/stop',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    )
+  })
+
+  it('fetches persisted task chat messages', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            task_id: 'task-chat-1',
+            messages: [
+              {
+                message_id: 'user-1',
+                role: 'user',
+                content: '这个仓库的入口在哪里？',
+                citations: [],
+                supplemental_notes: [],
+                confidence: null,
+                answer_source: null,
+                created_at: '2026-04-08T10:00:00Z',
+              },
+            ],
+          }),
+      }),
+    )
+
+    const result = await fetchTaskChatMessages('task-chat-1')
+
+    expect(result.task_id).toBe('task-chat-1')
+    expect(result.messages[0]?.role).toBe('user')
+  })
+
+  it('submits a task question and returns the exchange payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          task_id: 'task-chat-2',
+          user_message: {
+            message_id: 'user-2',
+            role: 'user',
+            content: '后端入口在哪？',
+            citations: [],
+            supplemental_notes: [],
+            confidence: null,
+            answer_source: null,
+            created_at: '2026-04-08T10:01:00Z',
+          },
+          assistant_message: {
+            message_id: 'assistant-2',
+            role: 'assistant',
+            content: '后端入口在 app/main.py。',
+            citations: [
+              {
+                path: 'app/main.py',
+                start_line: 1,
+                end_line: 8,
+                reason: '这里初始化了 FastAPI 应用。',
+                snippet: 'from fastapi import FastAPI',
+              },
+            ],
+            supplemental_notes: [],
+            confidence: 'high',
+            answer_source: 'llm',
+            created_at: '2026-04-08T10:01:01Z',
+          },
+        }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await submitTaskQuestion('task-chat-2', '后端入口在哪？')
+
+    expect(result.assistant_message.content).toContain('app/main.py')
+    expect(result.assistant_message.answer_source).toBe('llm')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/tasks/task-chat-2/chat',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ question: '后端入口在哪？' }),
+      }),
+    )
   })
 
   it('retries a failed task and stores the new task token', async () => {
@@ -434,6 +549,33 @@ describe('api service', () => {
     )
 
     await expect(fetchTaskStatus('task-1')).rejects.toThrow('Invalid task status payload.')
+  })
+
+  it('accepts task status payloads that include knowledge build fields', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          task_id: 'task-knowledge-1',
+          state: 'running',
+          stage: 'build_knowledge',
+          progress: 95,
+          message: null,
+          error: null,
+          knowledge_state: 'running',
+          knowledge_error: null,
+          created_at: '2026-04-08T10:00:00Z',
+          updated_at: '2026-04-08T10:01:00Z',
+        }),
+      }),
+    )
+
+    const result = await fetchTaskStatus('task-knowledge-1')
+
+    expect(result.stage).toBe('build_knowledge')
+    expect(result.knowledge_state).toBe('running')
   })
 
   it('throws a request error for non-json failing responses', async () => {

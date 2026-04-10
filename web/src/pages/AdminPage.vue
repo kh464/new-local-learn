@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import type { AuditEventQuery, AuditEventsPage, MetricsSnapshot, TaskListPage, TaskState } from '../types/contracts'
 import { fetchAuditEvents, fetchMetricsSnapshot, fetchTaskList } from '../services/api'
+import { formatTaskStateZh, formatTaskStageZh } from '../presentation/copy'
 
 const defaultAuditPageSize = 25
 const defaultTaskPageSize = 8
@@ -37,15 +38,15 @@ const hasPreviousAuditPage = computed(() => auditPage.value.offset > 0)
 const hasNextAuditPage = computed(
   () => auditPage.value.offset + auditPage.value.events.length < auditPage.value.total,
 )
-const taskPanelSummary = computed(() => `${taskPage.value.tasks.length} of ${taskPage.value.total} tasks`)
+const taskPanelSummary = computed(() => `${taskPage.value.tasks.length} / ${taskPage.value.total} 个任务`)
 const auditPageSummary = computed(() => {
   if (auditPage.value.total === 0) {
-    return 'No events'
+    return '暂无事件'
   }
 
   const start = auditPage.value.offset + 1
   const end = auditPage.value.offset + auditPage.value.events.length
-  return `${start}-${end} of ${auditPage.value.total}`
+  return `${start}-${end} / ${auditPage.value.total} 条`
 })
 
 function buildAuditQuery(offset = 0): AuditEventQuery {
@@ -101,7 +102,7 @@ async function load() {
     metrics.value = metricsPayload
     taskPage.value = tasksPayload
   } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Failed to load admin data.'
+    error.value = loadError instanceof Error ? loadError.message : '加载管理数据失败。'
   } finally {
     loading.value = false
   }
@@ -113,8 +114,8 @@ async function applyAuditFilters() {
 
   try {
     await loadAuditEvents(0)
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Failed to load audit events.'
+    } catch (loadError) {
+      error.value = loadError instanceof Error ? loadError.message : '加载审计事件失败。'
   } finally {
     loading.value = false
   }
@@ -126,8 +127,8 @@ async function applyTaskFilter() {
 
   try {
     await loadTasks()
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Failed to load tasks.'
+    } catch (loadError) {
+      error.value = loadError instanceof Error ? loadError.message : '加载任务失败。'
   } finally {
     loading.value = false
   }
@@ -143,8 +144,8 @@ async function goToPreviousAuditPage() {
 
   try {
     await loadAuditEvents(Math.max(auditPage.value.offset - auditPage.value.limit, 0))
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Failed to load audit events.'
+    } catch (loadError) {
+      error.value = loadError instanceof Error ? loadError.message : '加载审计事件失败。'
   } finally {
     loading.value = false
   }
@@ -160,8 +161,8 @@ async function goToNextAuditPage() {
 
   try {
     await loadAuditEvents(auditPage.value.offset + auditPage.value.limit)
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Failed to load audit events.'
+    } catch (loadError) {
+      error.value = loadError instanceof Error ? loadError.message : '加载审计事件失败。'
   } finally {
     loading.value = false
   }
@@ -173,22 +174,20 @@ onMounted(load)
 <template>
   <section class="admin-layout">
     <header class="panel admin-hero">
-      <p class="admin-hero__eyebrow">Operations</p>
-      <h2>Operations Console</h2>
-      <p>
-        Monitor recent audit activity and backend counters without leaving the workbench.
-      </p>
+      <p class="admin-hero__eyebrow">运维</p>
+      <h2>运维控制台</h2>
+      <p>无需离开工作台即可监控最近的审计活动和后台统计。</p>
     </header>
 
-    <p v-if="loading" class="admin-status">Loading admin data...</p>
+    <p v-if="loading" class="admin-status">正在加载管理数据...</p>
     <p v-else-if="error" class="admin-status admin-status--error" role="alert">{{ error }}</p>
 
     <div v-else class="admin-grid">
       <section class="panel admin-panel">
-        <div class="admin-panel__header">
-          <h3>Metrics Snapshot</h3>
-          <span>{{ metricEntries.length }} metrics</span>
-        </div>
+      <div class="admin-panel__header">
+        <h3>指标快照</h3>
+        <span>{{ metricEntries.length }} 项指标</span>
+      </div>
         <dl class="metric-list">
           <div v-for="[name, value] in metricEntries" :key="name" class="metric-list__item">
             <dt>{{ name }}</dt>
@@ -198,73 +197,73 @@ onMounted(load)
       </section>
 
       <section class="panel admin-panel">
-        <div class="admin-panel__header">
-          <h3>Recent Tasks</h3>
-          <span>{{ taskPanelSummary }}</span>
-        </div>
+      <div class="admin-panel__header">
+        <h3>最近任务</h3>
+        <span>{{ taskPanelSummary }}</span>
+      </div>
         <div class="task-toolbar">
           <label>
-            State
+            状态
             <select v-model="taskStateFilter" name="task-state">
-              <option value="">All</option>
-              <option value="queued">queued</option>
-              <option value="running">running</option>
-              <option value="succeeded">succeeded</option>
-              <option value="failed">failed</option>
-              <option value="cancelled">cancelled</option>
+              <option value="">全部</option>
+              <option value="queued">排队中</option>
+              <option value="running">执行中</option>
+              <option value="succeeded">成功</option>
+              <option value="failed">失败</option>
+              <option value="cancelled">已取消</option>
             </select>
           </label>
-          <button type="button" data-testid="task-filter-submit" @click="applyTaskFilter">Refresh tasks</button>
+          <button type="button" data-testid="task-filter-submit" @click="applyTaskFilter">刷新任务</button>
         </div>
         <ul class="task-list">
           <li v-for="task in taskPage.tasks" :key="task.task_id" class="task-list__item">
             <div class="task-list__main">
               <p class="task-list__title">
                 <strong>{{ task.task_id }}</strong>
-                <span>{{ task.state }}</span>
+                <span>{{ formatTaskStateZh(task.state) }}</span>
               </p>
               <p class="task-list__meta">
-                {{ task.github_url ?? 'No repository URL recorded' }}
+                {{ task.github_url ?? '未记录仓库地址' }}
               </p>
               <p class="task-list__meta">
-                Progress {{ task.progress }}%<span v-if="task.stage"> · {{ task.stage }}</span>
+                进度 {{ task.progress }}%<span v-if="task.stage"> · 阶段 {{ formatTaskStageZh(task.stage) }}</span>
               </p>
             </div>
-            <a class="task-list__link" :href="`/tasks/${task.task_id}`">Open task</a>
+            <a class="task-list__link" :href="`/tasks/${task.task_id}`">打开任务</a>
           </li>
         </ul>
-        <p v-if="!taskPage.tasks.length" class="task-list__empty">No tasks matched the current filter.</p>
+        <p v-if="!taskPage.tasks.length" class="task-list__empty">当前筛选未匹配任何任务。</p>
       </section>
 
       <section class="panel admin-panel">
-        <div class="admin-panel__header">
-          <h3>Recent Audit Events</h3>
-          <span>{{ auditPageSummary }}</span>
-        </div>
-        <form class="audit-filters" @submit.prevent="applyAuditFilters">
+      <div class="admin-panel__header">
+        <h3>最近审计事件</h3>
+        <span>{{ auditPageSummary }}</span>
+      </div>
+      <form class="audit-filters" @submit.prevent="applyAuditFilters">
+        <label>
+          操作
+          <input v-model="auditFilters.action" name="action" type="text" placeholder="task_artifact_download" />
+        </label>
+        <label>
+          结果
+          <select v-model="auditFilters.outcome" name="outcome">
+            <option value="">全部</option>
+            <option value="accepted">已接受</option>
+            <option value="success">成功</option>
+            <option value="denied">拒绝</option>
+          </select>
+        </label>
+        <label>
+          任务 ID
+          <input v-model="auditFilters.task_id" name="task_id" type="text" placeholder="task-123" />
+        </label>
           <label>
-            Action
-            <input v-model="auditFilters.action" name="action" type="text" placeholder="task_artifact_download" />
+            主体
+            <input v-model="auditFilters.subject" name="subject" type="text" placeholder="执行者" />
           </label>
-          <label>
-            Outcome
-            <select v-model="auditFilters.outcome" name="outcome">
-              <option value="">All</option>
-              <option value="accepted">accepted</option>
-              <option value="success">success</option>
-              <option value="denied">denied</option>
-            </select>
-          </label>
-          <label>
-            Task ID
-            <input v-model="auditFilters.task_id" name="task_id" type="text" placeholder="task-123" />
-          </label>
-          <label>
-            Subject
-            <input v-model="auditFilters.subject" name="subject" type="text" placeholder="worker" />
-          </label>
-          <button type="submit">Apply filters</button>
-        </form>
+        <button type="submit">应用筛选</button>
+      </form>
         <ul class="audit-list">
           <li
             v-for="event in auditPage.events"
@@ -276,14 +275,14 @@ onMounted(load)
               <span>{{ event.outcome }}</span>
             </p>
             <p class="audit-list__meta">
-              {{ event.method ?? 'N/A' }} {{ event.path ?? '' }}
+              {{ event.method ?? '无' }} {{ event.path ?? '' }}
             </p>
-            <p v-if="event.request_id" class="audit-list__meta">Request: {{ event.request_id }}</p>
-            <p v-if="event.task_id" class="audit-list__meta">Task: {{ event.task_id }}</p>
-            <p v-if="event.subject" class="audit-list__meta">Subject: {{ event.subject }}</p>
+            <p v-if="event.request_id" class="audit-list__meta">请求：{{ event.request_id }}</p>
+            <p v-if="event.task_id" class="audit-list__meta">任务：{{ event.task_id }}</p>
+            <p v-if="event.subject" class="audit-list__meta">主体：{{ event.subject }}</p>
           </li>
         </ul>
-        <p v-if="!auditPage.events.length" class="audit-list__empty">No audit events matched the current filters.</p>
+        <p v-if="!auditPage.events.length" class="audit-list__empty">当前筛选未匹配任何审计事件。</p>
         <div class="audit-pagination">
           <button
             type="button"
@@ -291,7 +290,7 @@ onMounted(load)
             :disabled="!hasPreviousAuditPage || loading"
             @click="goToPreviousAuditPage"
           >
-            Previous
+            上一页
           </button>
           <span>{{ auditPageSummary }}</span>
           <button
@@ -300,7 +299,7 @@ onMounted(load)
             :disabled="!hasNextAuditPage || loading"
             @click="goToNextAuditPage"
           >
-            Next
+            下一页
           </button>
         </div>
       </section>

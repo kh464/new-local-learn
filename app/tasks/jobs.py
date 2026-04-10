@@ -18,6 +18,7 @@ from app.core.models import (
     LogicSummary,
     MermaidSections,
     RepositorySummary,
+    TaskKnowledgeState,
     TaskStage,
     TaskState,
     TaskStatus,
@@ -34,6 +35,8 @@ from app.services.docs.html_compiler import HtmlCompiler
 from app.services.docs.markdown_compiler import MarkdownCompiler
 from app.services.docs.mermaid_builder import MermaidBuilder
 from app.services.docs.pdf_compiler import PdfCompiler
+from app.services.knowledge.index_builder import KnowledgeIndexBuilder
+from app.services.knowledge.repo_map_builder import RepoMapBuilder
 from app.services.repo.fetcher import normalize_github_url
 from app.services.repo.scanner import RepositoryScanner
 from app.storage.artifacts import ArtifactPaths
@@ -48,6 +51,7 @@ _RUNNING_STAGE_PROGRESS = {
     TaskStage.ANALYZE_BACKEND: 50,
     TaskStage.ANALYZE_FRONTEND: 65,
     TaskStage.BUILD_DOC: 85,
+    TaskStage.BUILD_KNOWLEDGE: 95,
 }
 
 
@@ -280,6 +284,8 @@ async def _set_stage(
     progress: int,
     created_at,
     error: str | None = None,
+    knowledge_state: TaskKnowledgeState | None = None,
+    knowledge_error: str | None = None,
 ) -> None:
     status = TaskStatus(
         task_id=task_id,
@@ -287,6 +293,8 @@ async def _set_stage(
         stage=stage,
         progress=progress,
         error=error,
+        knowledge_state=knowledge_state or TaskKnowledgeState.PENDING,
+        knowledge_error=knowledge_error,
         created_at=created_at,
     )
     await store.set_status(status)
@@ -297,6 +305,10 @@ async def _set_stage(
     }
     if error is not None:
         event["error"] = error
+    if knowledge_state is not None and knowledge_state is not TaskKnowledgeState.PENDING:
+        event["knowledge_state"] = knowledge_state.value
+    if knowledge_error is not None:
+        event["knowledge_error"] = knowledge_error
     await store.append_event(task_id, event)
     log_payload = {
         "task_id": task_id,
@@ -306,6 +318,10 @@ async def _set_stage(
     }
     if error is not None:
         log_payload["error"] = error
+    if knowledge_state is not None and knowledge_state is not TaskKnowledgeState.PENDING:
+        log_payload["knowledge_state"] = knowledge_state.value
+    if knowledge_error is not None:
+        log_payload["knowledge_error"] = knowledge_error
     _TASK_LOGGER.info(json.dumps(log_payload, separators=(",", ":")))
 
 
@@ -323,7 +339,7 @@ async def _ensure_not_cancelled(
     cancelled = TaskStatus(
         task_id=task_id,
         state=TaskState.CANCELLED,
-        stage=TaskStage.FINALIZE,
+        stage=stage,
         progress=progress,
         message="Cancellation requested.",
         created_at=created_at,
@@ -333,7 +349,7 @@ async def _ensure_not_cancelled(
         task_id,
         {
             "state": TaskState.CANCELLED.value,
-            "stage": TaskStage.FINALIZE.value,
+            "stage": stage.value,
             "progress": progress,
             "message": "Cancellation requested.",
         },
@@ -544,6 +560,69 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, obje
             agent_metadata=tracker.build(),
         )
         await store.set_result(task_id, result.model_dump())
+        knowledge_builder = _get_ctx_value(ctx, "knowledge_builder")
+        if knowledge_builder is None:
+            knowledge_builder = KnowledgeIndexBuilder(max_file_bytes=settings.max_file_bytes)
+        repo_map_builder = _get_ctx_value(ctx, "repo_map_builder")
+        if repo_map_builder is None:
+            repo_map_builder = RepoMapBuilder()
+        knowledge_state = TaskKnowledgeState.READY
+        knowledge_error = None
+        await _set_stage(
+            store,
+            task_id=task_id,
+            state=TaskState.RUNNING,
+            stage=TaskStage.BUILD_KNOWLEDGE,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.BUILD_KNOWLEDGE],
+            created_at=running_status.created_at,
+            knowledge_state=TaskKnowledgeState.RUNNING,
+        )
+        await _ensure_not_cancelled(
+            store,
+            task_id=task_id,
+            created_at=running_status.created_at,
+            progress=_RUNNING_STAGE_PROGRESS[TaskStage.BUILD_KNOWLEDGE],
+            stage=TaskStage.BUILD_KNOWLEDGE,
+        )
+        try:
+            await asyncio.to_thread(
+                knowledge_builder.build,
+                task_id=task_id,
+                repo_path=repo_path,
+                db_path=artifacts.knowledge_db_path,
+            )
+        except Exception as exc:
+            knowledge_state = TaskKnowledgeState.FAILED
+            knowledge_error = str(exc)
+            _TASK_LOGGER.warning(
+                json.dumps(
+                    {
+                        "message": "knowledge_build_failed",
+                        "task_id": task_id,
+                        "error": knowledge_error,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+        if knowledge_state is TaskKnowledgeState.READY:
+            try:
+                await asyncio.to_thread(
+                    repo_map_builder.build,
+                    task_id=task_id,
+                    repo_path=repo_path,
+                    output_path=artifacts.repo_map_path,
+                )
+            except Exception as exc:
+                _TASK_LOGGER.warning(
+                    json.dumps(
+                        {
+                            "message": "repo_map_build_failed",
+                            "task_id": task_id,
+                            "error": str(exc),
+                        },
+                        separators=(",", ":"),
+                    )
+                )
         await store.increment_metric("analysis_jobs_succeeded_total")
         await _set_stage(
             store,
@@ -552,6 +631,8 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, obje
             stage=TaskStage.FINALIZE,
             progress=100,
             created_at=running_status.created_at,
+            knowledge_state=knowledge_state,
+            knowledge_error=knowledge_error,
         )
         return {"task_id": task_id, "state": TaskState.SUCCEEDED.value, "result": result.model_dump()}
     except TaskCancelledError:

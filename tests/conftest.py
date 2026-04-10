@@ -145,6 +145,28 @@ def sample_analysis_result(tmp_path: Path) -> AnalysisResult:
     markdown_path.write_text("# Result\n", encoding="utf-8")
     repo_path = tmp_path / "source-repo"
     repo_path.mkdir(exist_ok=True)
+    (repo_path / "app").mkdir(exist_ok=True)
+    (repo_path / "web").mkdir(exist_ok=True)
+    (repo_path / "k8s").mkdir(exist_ok=True)
+    (repo_path / "app" / "main.py").write_text(
+        "from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get('/health')\nasync def health():\n    return {'ok': True}\n",
+        encoding="utf-8",
+    )
+    (repo_path / "web" / "App.tsx").write_text(
+        "import React from 'react'\n\nexport function App() {\n  fetch('/health')\n  return <div>Hello</div>\n}\n",
+        encoding="utf-8",
+    )
+    (repo_path / "docker-compose.yml").write_text(
+        "services:\n  api:\n    build: .\n    depends_on:\n      - redis\n",
+        encoding="utf-8",
+    )
+    (repo_path / ".env.example").write_text("REDIS_URL=redis://redis:6379/0\n", encoding="utf-8")
+    (repo_path / "k8s" / "api.yaml").write_text(
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n",
+        encoding="utf-8",
+    )
+    (repo_path / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n', encoding="utf-8")
+    (repo_path / "package.json").write_text('{"dependencies":{"react":"18.2.0","vite":"5.0.0"}}\n', encoding="utf-8")
     return AnalysisResult(
         github_url="https://github.com/octocat/Hello-World",
         repo_path=str(repo_path),

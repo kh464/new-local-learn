@@ -131,10 +131,10 @@ def test_read_repository_files_reads_requested_text_files(tmp_path):
 
 
 def test_prune_expired_task_artifacts_removes_only_old_directories(tmp_path):
-    old_dir = tmp_path / "old-task"
+    old_dir = tmp_path / ("d" * 32)
     old_dir.mkdir()
     (old_dir / "result.md").write_text("# old\n", encoding="utf-8")
-    recent_dir = tmp_path / "recent-task"
+    recent_dir = tmp_path / ("e" * 32)
     recent_dir.mkdir()
     (recent_dir / "result.md").write_text("# recent\n", encoding="utf-8")
 
@@ -148,6 +148,63 @@ def test_prune_expired_task_artifacts_removes_only_old_directories(tmp_path):
 
     removed = prune_expired_task_artifacts(tmp_path, max_age_seconds=3600)
 
-    assert removed == ["old-task"]
+    assert removed == [old_dir.name]
     assert not old_dir.exists()
     assert recent_dir.exists()
+
+
+def test_prune_expired_task_artifacts_skips_non_task_directories(tmp_path):
+    managed_dir = tmp_path / ("a" * 32)
+    managed_dir.mkdir()
+    (managed_dir / "result.md").write_text("# managed\n", encoding="utf-8")
+    stray_dir = tmp_path / "pytest"
+    stray_dir.mkdir()
+    (stray_dir / "note.txt").write_text("keep\n", encoding="utf-8")
+
+    old_timestamp = managed_dir.stat().st_mtime - 7200
+    import os
+
+    os.utime(managed_dir, (old_timestamp, old_timestamp))
+    os.utime(managed_dir / "result.md", (old_timestamp, old_timestamp))
+    os.utime(stray_dir, (old_timestamp, old_timestamp))
+    os.utime(stray_dir / "note.txt", (old_timestamp, old_timestamp))
+
+    removed = prune_expired_task_artifacts(tmp_path, max_age_seconds=3600)
+
+    assert removed == [managed_dir.name]
+    assert not managed_dir.exists()
+    assert stray_dir.exists()
+
+
+def test_prune_expired_task_artifacts_skips_directories_that_cannot_be_removed(tmp_path, monkeypatch):
+    blocked_dir = tmp_path / ("b" * 32)
+    blocked_dir.mkdir()
+    (blocked_dir / "result.md").write_text("# blocked\n", encoding="utf-8")
+    removable_dir = tmp_path / ("c" * 32)
+    removable_dir.mkdir()
+    (removable_dir / "result.md").write_text("# removable\n", encoding="utf-8")
+
+    old_timestamp = blocked_dir.stat().st_mtime - 7200
+    import os
+
+    os.utime(blocked_dir, (old_timestamp, old_timestamp))
+    os.utime(blocked_dir / "result.md", (old_timestamp, old_timestamp))
+    os.utime(removable_dir, (old_timestamp, old_timestamp))
+    os.utime(removable_dir / "result.md", (old_timestamp, old_timestamp))
+
+    import app.storage.artifacts as artifacts_module
+
+    original_rmtree = artifacts_module.shutil.rmtree
+
+    def fake_rmtree(path, ignore_errors=False):
+        if Path(path) == blocked_dir:
+            raise PermissionError("denied")
+        return original_rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(artifacts_module.shutil, "rmtree", fake_rmtree)
+
+    removed = prune_expired_task_artifacts(tmp_path, max_age_seconds=3600)
+
+    assert removed == [removable_dir.name]
+    assert blocked_dir.exists()
+    assert not removable_dir.exists()

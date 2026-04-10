@@ -4,6 +4,8 @@ import type {
   AnalysisTaskResponse,
   AnalysisResult,
   MetricsSnapshot,
+  TaskChatExchange,
+  TaskChatHistory,
   TaskListPage,
   TaskListQuery,
   TaskResultResponse,
@@ -15,6 +17,8 @@ import {
   isAnalysisTaskResponse,
   isFailedTaskState,
   isMetricsSnapshot,
+  isTaskChatExchange,
+  isTaskChatHistory,
   isPendingTaskState,
   isTaskListPage,
   isTaskStatus,
@@ -212,6 +216,41 @@ export async function cancelTask(taskId: string): Promise<TaskStatus> {
 
   if (!isTaskStatus(payload)) {
     throw new Error('Invalid task status payload.')
+  }
+
+  return payload
+}
+
+export async function stopTask(taskId: string): Promise<TaskStatus> {
+  const { payload } = await requestJson<unknown>(`/api/v1/tasks/${taskId}/stop`, {
+    method: 'POST',
+  })
+
+  if (!isTaskStatus(payload)) {
+    throw new Error('Invalid task status payload.')
+  }
+
+  return payload
+}
+
+export async function fetchTaskChatMessages(taskId: string): Promise<TaskChatHistory> {
+  const { payload } = await requestJson<unknown>(`/api/v1/tasks/${taskId}/chat/messages`)
+
+  if (!isTaskChatHistory(payload)) {
+    throw new Error('Invalid task chat payload.')
+  }
+
+  return payload
+}
+
+export async function submitTaskQuestion(taskId: string, question: string): Promise<TaskChatExchange> {
+  const { payload } = await requestJson<unknown>(`/api/v1/tasks/${taskId}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ question }),
+  })
+
+  if (!isTaskChatExchange(payload)) {
+    throw new Error('Invalid task chat payload.')
   }
 
   return payload

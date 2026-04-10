@@ -25,6 +25,7 @@ There is also a local `vue-frontend-workbench/` directory in the workspace, but 
 3. The worker clones and scans the target repository.
 4. Analyzer services detect frameworks/languages, summarize backend and frontend behavior, and map cross-layer flows.
 5. The document compiler emits Markdown, HTML, and PDF reports plus Mermaid diagram content under `artifacts/`.
+6. After report generation, the worker builds `knowledge.db` as the code-evidence layer and `repo_map.json` as the repository-cognition layer for follow-up chat.
 
 ## Repository Layout
 
@@ -186,7 +187,10 @@ Task lifecycle endpoints:
 - `GET /api/v1/tasks/{task_id}/result` returns the analysis result or a `202` payload while still running
 - `GET /api/v1/tasks/{task_id}/stream` returns task events as Server-Sent Events
 - `POST /api/v1/tasks/{task_id}/cancel` marks a queued or running task for cancellation
+- `POST /api/v1/tasks/{task_id}/stop` marks a queued or running task for cancellation using the newer stop alias
 - `POST /api/v1/tasks/{task_id}/retry` requeues a failed or cancelled task as a brand new task id
+- `GET /api/v1/tasks/{task_id}/chat/messages` returns the persisted task-level chat transcript
+- `POST /api/v1/tasks/{task_id}/chat` asks a follow-up question against a succeeded task and returns a cited Chinese answer with repo-map graph evidence when available
 - `GET /api/v1/tasks/{task_id}/artifacts/markdown` downloads the generated Markdown report
 - `GET /api/v1/tasks/{task_id}/artifacts/html` downloads the generated HTML report
 - `GET /api/v1/tasks/{task_id}/artifacts/pdf` downloads the generated PDF report
@@ -218,6 +222,7 @@ The Vue admin console now includes:
 - a metrics snapshot panel for backend counters
 - an audit event panel with filtering and pagination
 - cancel and retry controls on the task detail page for supported task states
+- a task detail workspace that keeps the generated report visible while allowing follow-up repository questions with cited answers after a task succeeds
 
 ## Container Build
 
@@ -263,6 +268,8 @@ The separate Vue frontend workbench repository also has its own workflow at [`.g
 ## Notes
 
 - Generated reports are written under `artifacts/` as `result.md`, `result.html`, and `result.pdf`.
+- Task chat artifacts now also include `knowledge.db` for code retrieval and `repo_map.json` for repository structure / call-chain reasoning.
+- Task chat answers now prefer `repo_map.json -> knowledge.db -> Chinese answer`; if repo-map building fails, chat degrades to the code-evidence-only path instead of failing the whole task.
 - Redis is required for the normal task store flow.
 - The API and worker now share the same Redis-backed queue/state backend.
 - The root repository is safe to publish because local secrets and model config files are ignored.

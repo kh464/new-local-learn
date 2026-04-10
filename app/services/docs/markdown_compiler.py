@@ -16,8 +16,8 @@ class MarkdownCompiler:
         critique_summary: dict[str, object],
         mermaid_sections: dict[str, str],
     ) -> str:
-        frameworks = ", ".join(detected_stack.get("frameworks", [])) or "unknown"
-        languages = ", ".join(detected_stack.get("languages", [])) or "unknown"
+        frameworks = ", ".join(detected_stack.get("frameworks", [])) or "未识别"
+        languages = ", ".join(detected_stack.get("languages", [])) or "未识别"
         repo_name = str(repo_summary.get("name", task_id))
         key_files = repo_summary.get("key_files", [])
         routes = backend_summary.get("routes", [])
@@ -32,90 +32,90 @@ class MarkdownCompiler:
             routing_text = routing
         else:
             route_paths = [route.get("path", "") for route in routing if isinstance(route, dict)]
-            routing_text = ", ".join(path for path in route_paths if path) or "not detected"
+            routing_text = ", ".join(path for path in route_paths if path) or "未检测到"
 
         lines = [
-            f"# Analysis Report: {repo_name}",
+            f"# 仓库分析报告：{repo_name}",
             "",
-            f"- Task ID: `{task_id}`",
-            f"- Frameworks: {frameworks}",
-            f"- Languages: {languages}",
+            f"- 任务 ID：`{task_id}`",
+            f"- 技术栈：{frameworks}",
+            f"- 语言：{languages}",
             "",
-            "## Key Files",
+            "## 关键文件",
         ]
 
         if key_files:
             lines.extend(f"- `{path}`" for path in key_files)
         else:
-            lines.append("- None detected")
+            lines.append("- 未识别到关键文件")
 
         lines.extend(
             [
                 "",
-                "## System Diagram",
+                "## 系统图",
                 "```mermaid",
                 mermaid_sections.get("system", "graph TD"),
                 "```",
                 "",
-                "## Backend Analysis",
+                "## 后端分析",
             ]
         )
 
         if routes:
             lines.extend(f"- `{route.get('method', 'GET')} {route.get('path', '')}`" for route in routes)
         else:
-            lines.append("- No backend routes detected")
+            lines.append("- 未识别到后端路由")
 
         lines.extend(
             [
                 "",
-                "## Frontend Analysis",
-                f"- Framework: {frontend_summary.get('framework') or 'unknown'}",
-                f"- Bundler: {frontend_summary.get('bundler') or 'unknown'}",
-                f"- State manager: {frontend_summary.get('state_manager') or 'not detected'}",
-                f"- Routing: {routing_text}",
-                f"- API calls detected: {len(api_calls)}",
-                f"- State units detected: {len(state_units)}",
-                f"- Components detected: {len(components)}",
+                "## 前端分析",
+                f"- 框架：{frontend_summary.get('framework') or '未识别'}",
+                f"- 构建工具：{frontend_summary.get('bundler') or '未识别'}",
+                f"- 状态管理：{frontend_summary.get('state_manager') or '未检测到'}",
+                f"- 路由：{routing_text}",
+                f"- API 调用数：{len(api_calls)}",
+                f"- 状态单元数：{len(state_units)}",
+                f"- 组件数：{len(components)}",
                 "",
-                "## Deploy Analysis",
-                f"- Services detected: {len(deploy_services)}",
-                f"- Environment files: {', '.join(deploy_summary.get('environment_files', [])) or 'none'}",
-                f"- Manifests: {', '.join(deploy_summary.get('manifests', [])) or 'none'}",
+                "## 部署分析",
+                f"- 服务数：{len(deploy_services)}",
+                f"- 环境文件：{', '.join(deploy_summary.get('environment_files', [])) or '无'}",
+                f"- 清单文件：{', '.join(deploy_summary.get('manifests', [])) or '无'}",
                 "",
-                "## Logic Summary",
-                f"- Cross-layer flows mapped: {len(flows)}",
+                "## 逻辑摘要",
+                f"- 已梳理跨层链路：{len(flows)}",
                 "",
-                "## Beginner Guide",
+                "## 新手学习指南",
                 str(tutorial_summary.get("mental_model", "")),
                 "",
-                "### Request Lifecycle",
+                "### 请求生命周期",
             ]
         )
         lines.extend(f"- {step}" for step in tutorial_summary.get("request_lifecycle", []))
         lines.extend(
             [
                 "",
-                "### Run Steps",
+                "### 运行步骤",
             ]
         )
         lines.extend(f"- {step}" for step in tutorial_summary.get("run_steps", []))
-        lines.extend(["", "### Pitfalls"])
+        lines.extend(["", "### 常见陷阱"])
         lines.extend(f"- {pitfall}" for pitfall in tutorial_summary.get("pitfalls", []))
-        lines.extend(["", "### Next Steps"])
+        lines.extend(["", "### 下一步"])
         lines.extend(f"- {step}" for step in tutorial_summary.get("next_steps", []))
-        lines.extend(["", "### FAQ"])
+        lines.extend(["", "### 常见问题"])
         lines.extend(
             f"- {entry.get('question', '')}: {entry.get('answer', '')}" for entry in tutorial_summary.get("faq_entries", [])
         )
-        lines.extend(["", "### Code Walkthroughs"])
+        lines.extend(["", "### 代码走读"])
         lines.extend(
             f"- {walkthrough.get('title', '')} ({walkthrough.get('source_file', '')})"
             for walkthrough in tutorial_summary.get("code_walkthroughs", [])
         )
-        lines.extend(["", "### Self-Check"])
+        lines.extend(["", "### 自检问题"])
         lines.extend(f"- {question}" for question in tutorial_summary.get("self_check_questions", []))
-        lines.extend(["", "## Coverage Notes"])
+        lines.extend(["", "## 覆盖说明"])
         lines.extend(f"- {note}" for note in critique_summary.get("coverage_notes", []))
         lines.extend(f"- {note}" for note in critique_summary.get("inferred_sections", []))
         lines.extend(f"- {note}" for note in critique_summary.get("missing_areas", []))

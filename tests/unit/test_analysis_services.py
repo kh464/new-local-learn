@@ -121,3 +121,40 @@ def test_deploy_analyzer_extracts_compose_env_and_kubernetes_metadata():
         "name": "api",
         "source_file": "k8s/api.yaml",
     }
+
+
+def test_deploy_analyzer_ignores_helm_templates_that_are_not_plain_yaml():
+    summary = DeployAnalyzer().analyze(
+        [
+            "ops/helm/learn-new/templates/configmap.yaml",
+            "ops/k8s/deployment.yaml",
+        ],
+        {
+            "ops/helm/learn-new/templates/configmap.yaml": (
+                "apiVersion: v1\n"
+                "kind: ConfigMap\n"
+                "metadata:\n"
+                "  name: {{ .Release.Name }}-config\n"
+                "data:\n"
+                "  EXAMPLE: {{ .Values.example | quote }}\n"
+            ),
+            "ops/k8s/deployment.yaml": (
+                "apiVersion: apps/v1\n"
+                "kind: Deployment\n"
+                "metadata:\n"
+                "  name: api\n"
+            ),
+        },
+    )
+
+    assert summary["manifests"] == [
+        "ops/helm/learn-new/templates/configmap.yaml",
+        "ops/k8s/deployment.yaml",
+    ]
+    assert summary["kubernetes_resources"] == [
+        {
+            "kind": "Deployment",
+            "name": "api",
+            "source_file": "ops/k8s/deployment.yaml",
+        }
+    ]

@@ -10,12 +10,17 @@ export function useTaskStatus(
 ) {
   const status = ref<TaskStatus | null>(null)
   const loading = ref(false)
+  const loadError = ref('')
   let timer: ReturnType<typeof setInterval> | null = null
 
   async function refresh() {
     loading.value = true
+    loadError.value = ''
     try {
       status.value = await loader(taskId)
+    } catch (error) {
+      loadError.value = error instanceof Error ? error.message : '任务状态加载失败。'
+      throw error
     } finally {
       loading.value = false
     }
@@ -31,7 +36,7 @@ export function useTaskStatus(
   function startPolling() {
     stopPolling()
     timer = setInterval(() => {
-      void refresh()
+      void refresh().catch(() => undefined)
     }, pollMs)
   }
 
@@ -42,6 +47,7 @@ export function useTaskStatus(
   return {
     status,
     loading,
+    loadError,
     refresh,
     startPolling,
     stopPolling,

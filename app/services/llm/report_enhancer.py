@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.core.models import TutorialSummary
 from app.services.llm.client import ChatCompletionClient
 
-_SYSTEM_PROMPT = """You generate beginner-friendly repository learning guides.
-Return strict JSON with these keys only:
+_SYSTEM_PROMPT = """你是一名面向初学者的仓库学习导师。
+你必须返回严格的 JSON，并且只能包含以下键：
 - mental_model: string
 - run_steps: array of 3 to 6 strings
 - pitfalls: array of 2 to 5 strings
 - self_check_questions: array of 3 to 5 strings
-Use concrete repository details. Do not wrap the JSON in markdown fences."""
+硬性要求：
+1. 所有字段的值都必须使用简体中文。
+2. 即使仓库中的文件名、框架名或代码片段包含英文，解释句子也必须使用中文。
+3. 禁止输出英文句子，禁止输出拼音，禁止输出 Markdown 代码块。
+4. 内容必须结合仓库细节，不能写空话。"""
+
+_CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class TutorialLLMEnhancer:
@@ -51,9 +58,16 @@ class TutorialLLMEnhancer:
         user_prompt = json.dumps(prompt_payload, ensure_ascii=False)
         if len(user_prompt) > self._max_prompt_chars:
             user_prompt = user_prompt[: self._max_prompt_chars]
+        user_prompt = (
+            "必须输出中文。所有解释、步骤、陷阱和自检问题都必须使用简体中文，"
+            "不能输出英文句子。\n"
+            f"{user_prompt}"
+        )
 
         response = await self._client.complete_json(system_prompt=_SYSTEM_PROMPT, user_prompt=user_prompt)
-        return TutorialSummary.model_validate(response).model_dump()
+        tutorial = TutorialSummary.model_validate(response)
+        self._ensure_chinese_output(tutorial)
+        return tutorial.model_dump()
 
     def _build_file_snippets(
         self,
@@ -76,3 +90,8 @@ class TutorialLLMEnhancer:
             if isinstance(content, str) and content:
                 snippets[path] = content[: self._max_snippet_chars]
         return snippets
+
+    def _ensure_chinese_output(self, tutorial: TutorialSummary) -> None:
+        text_fields = [tutorial.mental_model, *tutorial.run_steps, *tutorial.pitfalls, *tutorial.self_check_questions]
+        if not text_fields or any(not _CJK_PATTERN.search(text) for text in text_fields if text.strip()):
+            raise ValueError("LLM tutorial output must be Chinese.")

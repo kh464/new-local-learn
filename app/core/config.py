@@ -78,3 +78,11 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
         return value
+
+    @field_validator("llm_profile", mode="before")
+    @classmethod
+    def _normalize_llm_profile(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value

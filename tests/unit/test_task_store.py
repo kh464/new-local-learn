@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.models import TaskState, TaskStatus
+from app.core.models import TaskChatCitation, TaskChatMessage, TaskState, TaskStatus
 from app.storage.task_store import RedisTaskStore
 
 
@@ -167,3 +167,37 @@ async def test_task_store_lists_recent_tasks_with_filters(fakeredis_client):
     assert len(page.tasks) == 1
     assert page.tasks[0].task_id == "task-2"
     assert page.tasks[0].github_url == "https://github.com/octocat/two"
+
+
+async def test_task_store_chat_messages_round_trip(fakeredis_client):
+    store = RedisTaskStore(fakeredis_client)
+    await store.append_chat_message(
+        "task-chat-1",
+        TaskChatMessage(
+            message_id="user-1",
+            role="user",
+            content="这个仓库的后端入口在哪？",
+        ),
+    )
+    await store.append_chat_message(
+        "task-chat-1",
+        TaskChatMessage(
+            message_id="assistant-1",
+            role="assistant",
+            content="后端入口在 app/main.py。",
+            citations=[
+                TaskChatCitation(
+                    path="app/main.py",
+                    start_line=1,
+                    end_line=8,
+                    reason="这里定义了 FastAPI 应用实例和路由。",
+                    snippet="from fastapi import FastAPI",
+                )
+            ],
+        ),
+    )
+
+    messages = await store.get_chat_messages("task-chat-1")
+
+    assert [message.message_id for message in messages] == ["user-1", "assistant-1"]
+    assert messages[1].citations[0].path == "app/main.py"

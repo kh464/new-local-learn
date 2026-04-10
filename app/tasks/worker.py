@@ -6,6 +6,8 @@ from app.core.config import Settings
 from app.services.llm.client import ChatCompletionClient
 from app.services.llm.config import load_runtime_config
 from app.services.llm.report_enhancer import TutorialLLMEnhancer
+from app.services.knowledge.index_builder import KnowledgeIndexBuilder
+from app.services.knowledge.repo_map_builder import RepoMapBuilder
 from app.services.repo.fetcher import clone_github_repo, read_repository_files
 from app.storage.task_store import RedisTaskStore
 from app.tasks.jobs import run_analysis_job
@@ -23,6 +25,8 @@ async def startup(ctx: dict) -> None:
 
     ctx["clone_repo"] = clone_repo_with_settings
     ctx["read_files"] = read_repository_files
+    ctx["knowledge_builder"] = KnowledgeIndexBuilder(max_file_bytes=settings.max_file_bytes)
+    ctx["repo_map_builder"] = RepoMapBuilder()
     tutorial_generator = _build_tutorial_generator()
     if tutorial_generator is not None:
         ctx["tutorial_generator"] = tutorial_generator

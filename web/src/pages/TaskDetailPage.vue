@@ -3,25 +3,28 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import AnalysisResultView from '../components/AnalysisResultView.vue'
+import TaskChatPanel from '../components/TaskChatPanel.vue'
 import TaskErrorState from '../components/TaskErrorState.vue'
 import TaskEventTimeline from '../components/TaskEventTimeline.vue'
 import TaskStatusCard from '../components/TaskStatusCard.vue'
 import { useAnalysisResult } from '../composables/useAnalysisResult'
 import { useTaskStatus } from '../composables/useTaskStatus'
 import { useTaskStream } from '../composables/useTaskStream'
-import { cancelTask, retryTask } from '../services/api'
+import { retryTask, stopTask } from '../services/api'
 
 const props = defineProps<{
   taskId: string
 }>()
 
 const router = useRouter()
-const { status, refresh, startPolling, stopPolling } = useTaskStatus(props.taskId)
+const { status, loadError, refresh, startPolling, stopPolling } = useTaskStatus(props.taskId)
 const { events, connected, connect, disconnect } = useTaskStream(`/api/v1/tasks/${props.taskId}/stream`)
 const { result, pending, terminalError, notFound, load } = useAnalysisResult(props.taskId)
-const actionPending = ref<'cancel' | 'retry' | null>(null)
+
+const actionPending = ref<'stop' | 'retry' | null>(null)
 
 const currentStatus = computed(() => status.value)
+const statusLoadError = computed(() => loadError.value)
 const streamEvents = computed(() => events.value)
 const isStreamConnected = computed(() => connected.value)
 const currentResult = computed(() => result.value)
@@ -42,11 +45,12 @@ const isFailed = computed(() => {
   return state === 'failed' || state === 'cancelled'
 })
 const failureMessage = computed(() => currentStatus.value?.error ?? terminalError.value)
+const showChatPanel = computed(() => isSucceeded.value && Boolean(currentResult.value))
 
-async function handleCancel() {
-  actionPending.value = 'cancel'
+async function handleStop() {
+  actionPending.value = 'stop'
   try {
-    await cancelTask(props.taskId)
+    await stopTask(props.taskId)
     await refresh()
   } finally {
     actionPending.value = null
@@ -64,7 +68,7 @@ async function handleRetry() {
 }
 
 onMounted(async () => {
-  await refresh()
+  await refresh().catch(() => undefined)
   startPolling()
   connect()
 })
@@ -90,25 +94,31 @@ watch(
   <div class="task-layout">
     <TaskErrorState
       v-if="isNotFound"
-      title="Task not found"
-      message="The requested task does not exist or has already been removed."
+      title="查无此任务"
+      message="请求的任务不存在，或者已经被移除。"
     />
 
     <template v-else>
       <TaskStatusCard v-if="currentStatus" :status="currentStatus" />
 
+      <TaskErrorState
+        v-if="!currentStatus && statusLoadError"
+        title="任务状态加载失败"
+        :message="statusLoadError"
+      />
+
       <section class="panel task-layout__meta">
-        <p>Live stream: {{ isStreamConnected ? 'connected' : 'disconnected' }}</p>
-        <p>Task ID: {{ taskId }}</p>
+        <p>实时流：{{ isStreamConnected ? '已连接' : '已断开' }}</p>
+        <p>任务编号：{{ taskId }}</p>
         <div class="task-layout__actions">
           <button
             v-if="canCancel"
             type="button"
-            data-testid="cancel-task"
+            data-testid="stop-task"
             :disabled="actionPending !== null"
-            @click="handleCancel"
+            @click="handleStop"
           >
-            {{ actionPending === 'cancel' ? 'Cancelling...' : 'Cancel task' }}
+            {{ actionPending === 'stop' ? '正在停止...' : '停止分析' }}
           </button>
           <button
             v-if="canRetry"
@@ -117,25 +127,32 @@ watch(
             :disabled="actionPending !== null"
             @click="handleRetry"
           >
-            {{ actionPending === 'retry' ? 'Retrying...' : 'Retry task' }}
+            {{ actionPending === 'retry' ? '正在重试...' : '重试任务' }}
           </button>
         </div>
       </section>
 
-      <TaskEventTimeline :events="streamEvents" />
+      <TaskEventTimeline
+        v-if="currentStatus || !statusLoadError"
+        :status="currentStatus ?? null"
+        :events="streamEvents"
+      />
 
       <TaskErrorState
         v-if="isFailed && failureMessage"
-        title="Task failed"
+        title="任务失败"
         :message="failureMessage"
       />
 
       <section v-else-if="resultPending" class="panel task-layout__pending">
-        <h3>Result loading</h3>
-        <p>The task is complete, but the final result payload is still being fetched.</p>
+        <h3>结果加载中</h3>
+        <p>任务已经完成，正在获取最终分析结果。</p>
       </section>
 
-      <AnalysisResultView v-else-if="currentResult" :task-id="taskId" :result="currentResult" />
+      <section v-else-if="currentResult" class="task-layout__workspace">
+        <AnalysisResultView :task-id="taskId" :result="currentResult" />
+        <TaskChatPanel v-if="showChatPanel" :task-id="taskId" :status="currentStatus ?? null" />
+      </section>
     </template>
   </div>
 </template>
@@ -150,6 +167,12 @@ watch(
 .task-layout__pending {
   display: grid;
   gap: 8px;
+}
+
+.task-layout__workspace {
+  display: grid;
+  gap: 20px;
+  align-items: start;
 }
 
 .task-layout__actions {
@@ -177,5 +200,11 @@ watch(
 .task-layout__pending h3,
 .task-layout__pending p {
   margin: 0;
+}
+
+@media (min-width: 1200px) {
+  .task-layout__workspace {
+    grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.9fr);
+  }
 }
 </style>

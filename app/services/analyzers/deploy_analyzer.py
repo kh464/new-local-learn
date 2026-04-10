@@ -55,20 +55,27 @@ class DeployAnalyzer:
         resources: list[dict[str, str]] = []
         for source_file in manifests:
             content = file_contents.get(source_file, "")
-            for document in yaml.safe_load_all(content):
-                if not isinstance(document, dict):
-                    continue
-                kind = document.get("kind")
-                metadata = document.get("metadata", {})
-                name = metadata.get("name") if isinstance(metadata, dict) else None
-                if kind and name:
-                    resources.append(
-                        {
-                            "kind": str(kind),
-                            "name": str(name),
-                            "source_file": source_file,
-                        }
-                    )
+            try:
+                documents = yaml.safe_load_all(content)
+            except yaml.YAMLError:
+                continue
+            try:
+                for document in documents:
+                    if not isinstance(document, dict):
+                        continue
+                    kind = document.get("kind")
+                    metadata = document.get("metadata", {})
+                    name = metadata.get("name") if isinstance(metadata, dict) else None
+                    if kind and name:
+                        resources.append(
+                            {
+                                "kind": str(kind),
+                                "name": str(name),
+                                "source_file": source_file,
+                            }
+                        )
+            except yaml.YAMLError:
+                continue
         return resources
 
     def _normalize_depends_on(self, value: object) -> list[str]:

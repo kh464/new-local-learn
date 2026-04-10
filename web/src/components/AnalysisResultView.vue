@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import {
+  formatBooleanZh,
+  formatExecutionModeZh,
+  formatFallbackTextZh,
+  formatTaskStateZh,
+} from '../presentation/copy'
 import { buildTaskArtifactUrl, downloadTaskArtifact } from '../services/api'
 import { getAccessToken } from '../services/authSession'
 import type { AnalysisResult } from '../types/contracts'
@@ -12,29 +18,69 @@ const props = defineProps<{
   result: AnalysisResult
 }>()
 
-const usedRolesText = computed(() => props.result.agent_metadata?.used_roles.join(', ') || 'none')
-const fallbackRolesText = computed(() => props.result.agent_metadata?.fallbacks.join(', ') || 'none')
+type AgentExecutionNode = NonNullable<NonNullable<AnalysisResult['agent_metadata']>['execution_nodes'][number]>
+
+const usedRolesText = computed(() => props.result.agent_metadata?.used_roles.join(', ') || '无')
+const fallbackRolesText = computed(() => props.result.agent_metadata?.fallbacks.join(', ') || '无')
 const executionNodes = computed(() => props.result.agent_metadata?.execution_nodes ?? [])
+const environmentFilesText = computed(() => props.result.deploy_summary.environment_files.join(', ') || '无')
+const manifestsText = computed(() => props.result.deploy_summary.manifests.join(', ') || '无')
+const tutorialGenerationNode = computed<AgentExecutionNode | null>(
+  () => executionNodes.value.find((node) => node.node === 'tutorial_generation') ?? null,
+)
+const tutorialGenerationStatus = computed(() => {
+  const node = tutorialGenerationNode.value
+  const metadataFallbacks = props.result.agent_metadata?.fallbacks ?? []
+  const usedRoles = props.result.agent_metadata?.used_roles ?? []
+  const usedFallback =
+    node?.status === 'fallback' ||
+    node?.execution_mode === 'fallback' ||
+    metadataFallbacks.includes('tutorial_generation')
+  const inferredLlmSuccess =
+    node === null &&
+    props.result.agent_metadata?.enabled === true &&
+    usedRoles.includes('tutor') &&
+    !metadataFallbacks.includes('tutorial_generation')
+
+  if (usedFallback) {
+    return {
+      label: '已回退到内置生成',
+      reason: node?.reason ?? '',
+    }
+  }
+
+  if ((node?.execution_mode === 'llm' && node.status === 'completed') || inferredLlmSuccess) {
+    return {
+      label: '大模型生成',
+      reason: '',
+    }
+  }
+
+  return {
+    label: '内置生成',
+    reason: '',
+  }
+})
 const artifactLinks = computed(() =>
   [
     {
       key: 'markdown',
-      title: 'Markdown Artifact Path',
-      label: 'Download Markdown',
+      title: 'Markdown 产物路径',
+      label: '下载 Markdown',
       path: props.result.markdown_path,
       kind: 'markdown' as const,
     },
     {
       key: 'html',
-      title: 'HTML Artifact Path',
-      label: 'Download HTML',
+      title: 'HTML 产物路径',
+      label: '下载 HTML',
       path: props.result.html_path,
       kind: 'html' as const,
     },
     {
       key: 'pdf',
-      title: 'PDF Artifact Path',
-      label: 'Download PDF',
+      title: 'PDF 产物路径',
+      label: '下载 PDF',
       path: props.result.pdf_path,
       kind: 'pdf' as const,
     },
@@ -56,19 +102,19 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
 
 <template>
   <div class="result-grid">
-    <ResultSectionCard title="Project Overview" eyebrow="Repository">
+    <ResultSectionCard title="项目概览" eyebrow="仓库">
       <p>{{ result.repo_summary.name }}</p>
       <p>{{ result.github_url }}</p>
-      <p>{{ result.repo_summary.file_count }} files scanned</p>
+      <p>{{ result.repo_summary.file_count }} 个文件已扫描</p>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Detected Tech Stack" eyebrow="Stack">
+    <ResultSectionCard title="识别到的技术栈" eyebrow="技术栈">
       <ul>
         <li v-for="framework in result.detected_stack.frameworks" :key="framework">{{ framework }}</li>
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Backend Analysis" eyebrow="Routes">
+    <ResultSectionCard title="后端分析" eyebrow="路由">
       <ul>
         <li v-for="route in result.backend_summary.routes" :key="`${route.method}-${route.path}`">
           {{ route.method }} {{ route.path }}
@@ -76,10 +122,10 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Frontend Analysis" eyebrow="Calls">
-      <p>Framework: {{ result.frontend_summary.framework ?? 'unknown' }}</p>
-      <p>Bundler: {{ result.frontend_summary.bundler ?? 'unknown' }}</p>
-      <p>State Manager: {{ result.frontend_summary.state_manager ?? 'not detected' }}</p>
+    <ResultSectionCard title="前端分析" eyebrow="调用">
+      <p>框架：{{ formatFallbackTextZh(result.frontend_summary.framework) }}</p>
+      <p>构建工具：{{ formatFallbackTextZh(result.frontend_summary.bundler) }}</p>
+      <p>状态管理：{{ formatFallbackTextZh(result.frontend_summary.state_manager) }}</p>
       <ul>
         <li v-for="unit in result.frontend_summary.state_units" :key="`${unit.source_file}-${unit.name}`">
           {{ unit.name }}
@@ -93,7 +139,7 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Core Logic Flows" eyebrow="Inference">
+    <ResultSectionCard title="核心逻辑链路" eyebrow="推断">
       <ul>
         <li v-for="flow in result.logic_summary.flows" :key="`${flow.frontend_call}-${flow.backend_route}`">
           {{ flow.frontend_call }} -> {{ flow.backend_method }} {{ flow.backend_route }}
@@ -101,12 +147,12 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Deploy Analysis" eyebrow="Infra">
-      <p>Environment files: {{ result.deploy_summary.environment_files.join(', ') || 'none' }}</p>
-      <p>Kubernetes manifests: {{ result.deploy_summary.manifests.join(', ') || 'none' }}</p>
+    <ResultSectionCard title="部署分析" eyebrow="基础设施">
+      <p>环境变量文件：{{ environmentFilesText }}</p>
+      <p>Kubernetes 清单：{{ manifestsText }}</p>
       <ul>
         <li v-for="service in result.deploy_summary.services" :key="`${service.source_file}-${service.name}`">
-          {{ service.name }}<span v-if="service.depends_on?.length"> depends on {{ service.depends_on.join(', ') }}</span>
+          {{ service.name }}<span v-if="service.depends_on?.length"> 依赖 {{ service.depends_on.join(', ') }}</span>
         </li>
         <li
           v-for="variable in result.deploy_summary.environment_variables ?? []"
@@ -123,43 +169,51 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Beginner Learning Guide" eyebrow="Tutor">
+    <ResultSectionCard title="新手学习指南" eyebrow="导师">
       <p>{{ result.tutorial_summary.mental_model }}</p>
-      <h4>Request Lifecycle</h4>
+      <div class="tutorial-generation-status">
+        <h4>教程生成状态</h4>
+        <p>{{ tutorialGenerationStatus.label }}</p>
+        <p v-if="tutorialGenerationStatus.reason">{{ tutorialGenerationStatus.reason }}</p>
+      </div>
+      <h4>请求生命周期</h4>
       <ul>
         <li v-for="step in result.tutorial_summary.request_lifecycle" :key="step">{{ step }}</li>
       </ul>
-      <h4>Run Steps</h4>
+      <h4>运行步骤</h4>
       <ul>
         <li v-for="step in result.tutorial_summary.run_steps" :key="step">{{ step }}</li>
       </ul>
-      <h4>Pitfalls</h4>
+      <h4>常见陷阱</h4>
       <ul>
         <li v-for="pitfall in result.tutorial_summary.pitfalls" :key="pitfall">{{ pitfall }}</li>
       </ul>
-      <h4>Code Walkthroughs</h4>
+      <h4>代码走读</h4>
       <ul>
-        <li v-for="walkthrough in result.tutorial_summary.code_walkthroughs" :key="`${walkthrough.source_file}-${walkthrough.title}`">
+        <li
+          v-for="walkthrough in result.tutorial_summary.code_walkthroughs"
+          :key="`${walkthrough.source_file}-${walkthrough.title}`"
+        >
           {{ walkthrough.title }}
         </li>
       </ul>
-      <h4>FAQ</h4>
+      <h4>常见问题</h4>
       <ul>
         <li v-for="faq in result.tutorial_summary.faq_entries" :key="faq.question">
-          {{ faq.question }}: {{ faq.answer }}
+          {{ faq.question }}：{{ faq.answer }}
         </li>
       </ul>
-      <h4>Next Steps</h4>
+      <h4>下一步</h4>
       <ul>
         <li v-for="step in result.tutorial_summary.next_steps" :key="step">{{ step }}</li>
       </ul>
-      <h4>Self-Check</h4>
+      <h4>自检问题</h4>
       <ul>
         <li v-for="question in result.tutorial_summary.self_check_questions" :key="question">{{ question }}</li>
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard title="Coverage Notes" eyebrow="Critic">
+    <ResultSectionCard title="覆盖说明" eyebrow="评审">
       <ul>
         <li v-for="note in result.critique_summary.coverage_notes" :key="note">{{ note }}</li>
         <li v-for="item in result.critique_summary.inferred_sections" :key="item">{{ item }}</li>
@@ -167,13 +221,14 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       </ul>
     </ResultSectionCard>
 
-    <ResultSectionCard v-if="result.agent_metadata" title="Agent Execution" eyebrow="Orchestrator">
-      <p>Enabled: {{ result.agent_metadata.enabled ? 'yes' : 'no' }}</p>
-      <p>Used Roles: {{ usedRolesText }}</p>
-      <p>Fallbacks: {{ fallbackRolesText }}</p>
+    <ResultSectionCard v-if="result.agent_metadata" title="代理执行情况" eyebrow="编排">
+      <p>已启用：{{ formatBooleanZh(result.agent_metadata.enabled) }}</p>
+      <p>使用角色：{{ usedRolesText }}</p>
+      <p>兜底角色：{{ fallbackRolesText }}</p>
       <ul>
         <li v-for="node in executionNodes" :key="node.node">
-          {{ node.node }}: {{ node.status }} ({{ node.execution_mode ?? 'planned' }})
+          {{ node.node }}：{{ formatTaskStateZh(node.status) }}（{{ formatExecutionModeZh(node.execution_mode) }}）
+          <span v-if="node.reason"> {{ node.reason }}</span>
         </li>
       </ul>
     </ResultSectionCard>
@@ -182,7 +237,7 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       v-for="artifact in artifactLinks"
       :key="artifact.key"
       :title="artifact.title"
-      eyebrow="Artifact"
+      eyebrow="产物"
     >
       <button
         v-if="artifact.requiresAuthenticatedDownload"
@@ -205,7 +260,7 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
       <pre>{{ artifact.path }}</pre>
     </ResultSectionCard>
 
-    <ResultSectionCard title="System Diagram Source" eyebrow="Mermaid">
+    <ResultSectionCard title="系统图源码" eyebrow="Mermaid">
       <pre>{{ result.mermaid_sections.system }}</pre>
     </ResultSectionCard>
   </div>
@@ -223,5 +278,9 @@ async function handleArtifactDownload(kind: 'markdown' | 'html' | 'pdf') {
   padding: 0;
   cursor: pointer;
   font: inherit;
+}
+
+.tutorial-generation-status {
+  margin-bottom: 0.75rem;
 }
 </style>

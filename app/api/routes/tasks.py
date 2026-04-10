@@ -14,13 +14,30 @@ from app.core.models import (
     AnalysisResult,
     AnalyzeRequest,
     TaskListPage,
+    TaskChatExchange,
+    TaskChatHistory,
+    TaskChatMessage,
+    TaskChatRequest,
+    TaskKnowledgeState,
     TaskStage,
     TaskState,
     TaskStatus,
 )
 from app.core.config import Settings
 from app.core.security import require_api_key_scopes, require_task_access, require_task_access_scopes
+from app.services.chat.answer_composer import AnswerComposer
+from app.services.chat.answer_validator import AnswerValidator
+from app.services.chat.evidence_assembler import EvidenceAssembler
+from app.services.chat.llm_planning_agent import LlmPlanningAgent
+from app.services.chat.mcp_gateway import McpGateway
+from app.services.chat.mcp_tools import RepositoryQaToolSession
+from app.services.chat.orchestrator import TaskChatOrchestrator
+from app.services.chat.rule_fallback_planner import RuleFallbackPlanner
+from app.services.llm.client import ChatCompletionClient
+from app.services.llm.config import load_runtime_config
+from app.services.llm.knowledge_chat import KnowledgeChatService
 from app.services.repo.fetcher import normalize_github_url
+from app.storage.artifacts import ArtifactPaths
 from app.storage.task_store import RedisTaskStore
 
 router = APIRouter()
@@ -52,6 +69,81 @@ def get_settings(request: Request) -> Settings:
     if settings is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Settings are not configured.")
     return settings
+
+
+def _build_llm_client(settings: Settings) -> ChatCompletionClient | None:
+    if not getattr(settings, "llm_enabled", False) or not settings.llm_config_path.is_file():
+        return None
+    try:
+        runtime_config = load_runtime_config(settings.llm_config_path, settings.llm_profile)
+    except Exception:
+        return None
+    return ChatCompletionClient(runtime_config)
+
+
+async def _build_task_chat_orchestrator(
+    *,
+    task_id: str,
+    db_path: Path | str,
+    repo_map_path: Path | str | None,
+    task_store: RedisTaskStore,
+    planning_client: ChatCompletionClient | None,
+    evidence_assembler: EvidenceAssembler,
+    answer_composer: AnswerComposer,
+    answer_validator: AnswerValidator,
+) -> TaskChatOrchestrator:
+    result = await task_store.get_result(task_id)
+    repo_root = Path(result.repo_path) if result is not None else Path(db_path).parent
+    session = RepositoryQaToolSession(
+        task_id=task_id,
+        repo_root=repo_root,
+        repo_map_path=repo_map_path or (Path(db_path).parent / "repo_map.json"),
+        knowledge_db_path=db_path,
+        task_store=task_store,
+    )
+    return TaskChatOrchestrator(
+        planning_agent=LlmPlanningAgent(client=planning_client) if planning_client is not None else None,
+        fallback_planner=RuleFallbackPlanner(),
+        mcp_gateway=McpGateway(session=session),
+        evidence_assembler=evidence_assembler,
+        answer_composer=answer_composer,
+        answer_validator=answer_validator,
+    )
+
+
+def get_knowledge_chat_service(request: Request) -> KnowledgeChatService:
+    service = getattr(request.app.state, "knowledge_chat_service", None)
+    if service is not None:
+        return service
+
+    orchestrator = getattr(request.app.state, "task_chat_orchestrator", None)
+    if orchestrator is not None:
+        service = KnowledgeChatService(orchestrator=orchestrator)
+        request.app.state.knowledge_chat_service = service
+        return service
+
+    settings = get_settings(request)
+    task_store = get_task_store(request)
+    planning_client = _build_llm_client(settings)
+    evidence_assembler = EvidenceAssembler()
+    answer_composer = AnswerComposer(client=planning_client)
+    answer_validator = AnswerValidator()
+
+    async def orchestrator_factory(**kwargs):
+        return await _build_task_chat_orchestrator(
+            task_id=str(kwargs["task_id"]),
+            db_path=kwargs["db_path"],
+            repo_map_path=kwargs.get("repo_map_path"),
+            task_store=task_store,
+            planning_client=planning_client,
+            evidence_assembler=evidence_assembler,
+            answer_composer=answer_composer,
+            answer_validator=answer_validator,
+        )
+
+    service = KnowledgeChatService(orchestrator_factory=orchestrator_factory)
+    request.app.state.knowledge_chat_service = service
+    return service
 
 
 async def get_task_result_or_404(task_id: str, store: RedisTaskStore) -> AnalysisResult:
@@ -258,8 +350,7 @@ async def task_artifact(
     return build_artifact_response(result, artifact_kind)
 
 
-@router.post("/tasks/{task_id}/cancel", response_model=TaskStatus, status_code=202)
-async def cancel_task(
+async def _request_task_stop(
     task_id: str,
     request: Request,
     store: RedisTaskStore = Depends(get_task_store),
@@ -275,7 +366,7 @@ async def cancel_task(
         cancelled = TaskStatus(
             task_id=task_id,
             state=TaskState.CANCELLED,
-            stage=TaskStage.FINALIZE,
+            stage=status_payload.stage,
             progress=status_payload.progress,
             message="Cancellation requested.",
             created_at=status_payload.created_at,
@@ -285,7 +376,7 @@ async def cancel_task(
             task_id,
             {
                 "state": TaskState.CANCELLED.value,
-                "stage": TaskStage.FINALIZE.value,
+                "stage": cancelled.stage.value if cancelled.stage is not None else None,
                 "progress": cancelled.progress,
                 "message": "Cancellation requested.",
             },
@@ -315,6 +406,26 @@ async def cancel_task(
         },
     )
     return updated
+
+
+@router.post("/tasks/{task_id}/stop", response_model=TaskStatus, status_code=202)
+async def stop_task(
+    task_id: str,
+    request: Request,
+    store: RedisTaskStore = Depends(get_task_store),
+    settings: Settings = Depends(get_settings),
+) -> TaskStatus:
+    return await _request_task_stop(task_id, request, store, settings)
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=TaskStatus, status_code=202)
+async def cancel_task(
+    task_id: str,
+    request: Request,
+    store: RedisTaskStore = Depends(get_task_store),
+    settings: Settings = Depends(get_settings),
+) -> TaskStatus:
+    return await _request_task_stop(task_id, request, store, settings)
 
 
 @router.post("/tasks/{task_id}/retry", status_code=202)
@@ -385,4 +496,77 @@ async def task_stream(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/tasks/{task_id}/chat/messages", response_model=TaskChatHistory)
+async def task_chat_messages(
+    task_id: str,
+    request: Request,
+    store: RedisTaskStore = Depends(get_task_store),
+    settings: Settings = Depends(get_settings),
+) -> TaskChatHistory:
+    await require_task_access(request, task_id, settings, store)
+    status_payload = await store.get_status(task_id)
+    if status_payload is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return TaskChatHistory(task_id=task_id, messages=await store.get_chat_messages(task_id))
+
+
+@router.post("/tasks/{task_id}/chat", response_model=TaskChatExchange)
+async def task_chat(
+    task_id: str,
+    payload: TaskChatRequest,
+    request: Request,
+    store: RedisTaskStore = Depends(get_task_store),
+    settings: Settings = Depends(get_settings),
+    chat_service: KnowledgeChatService = Depends(get_knowledge_chat_service),
+) -> TaskChatExchange:
+    await require_task_access_scopes(request, task_id, settings, store, required_scopes=("tasks:write",))
+    status_payload = await store.get_status(task_id)
+    if status_payload is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if status_payload.state is not TaskState.SUCCEEDED or status_payload.knowledge_state is not TaskKnowledgeState.READY:
+        raise HTTPException(status_code=409, detail="Task chat is available only after the knowledge base is ready.")
+
+    result = await store.get_result(task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task result not found.")
+    artifacts = ArtifactPaths(base_dir=settings.artifacts_dir, task_id=task_id)
+    db_path = artifacts.knowledge_db_path
+    if not db_path.is_file():
+        raise HTTPException(status_code=404, detail="Task knowledge base not found.")
+    repo_map_path = artifacts.repo_map_path if artifacts.repo_map_path.is_file() else None
+
+    history = await store.get_chat_messages(task_id)
+    user_message = TaskChatMessage(
+        message_id=uuid4().hex,
+        role="user",
+        content=payload.question.strip(),
+    )
+    await store.append_chat_message(task_id, user_message)
+
+    answer = await chat_service.answer_question(
+        task_id=task_id,
+        db_path=db_path,
+        repo_map_path=repo_map_path,
+        question=user_message.content,
+        history=history,
+    )
+    assistant_message = TaskChatMessage(
+        message_id=uuid4().hex,
+        role="assistant",
+        content=answer.answer,
+        citations=answer.citations,
+        graph_evidence=answer.graph_evidence,
+        supplemental_notes=answer.supplemental_notes,
+        confidence=answer.confidence,
+        answer_source=answer.answer_source,
+        planner_metadata=answer.planner_metadata,
+    )
+    await store.append_chat_message(task_id, assistant_message)
+    return TaskChatExchange(
+        task_id=task_id,
+        user_message=user_message,
+        assistant_message=assistant_message,
     )

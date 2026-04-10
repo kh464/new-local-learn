@@ -40,9 +40,10 @@ def test_markdown_compiler_includes_mermaid_and_routes():
 
     assert "```mermaid" in markdown
     assert "/health" in markdown
-    assert "Framework: react" in markdown
-    assert "Deploy Analysis" in markdown
-    assert "Coverage Notes" in markdown
+    assert "框架：react" in markdown
+    assert "部署分析" in markdown
+    assert "覆盖说明" in markdown
+    assert "把这个项目理解为由 fastapi, react 组成的一条处理链路。" in markdown
 
 
 def test_html_compiler_wraps_markdown_in_html_document():
