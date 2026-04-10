@@ -272,14 +272,12 @@ watch(
         <p class="task-chat__eyebrow">代码问答</p>
         <h3>继续追问仓库实现</h3>
       </div>
-      <p class="task-chat__hint">
-        回答会优先依据仓库认知图与真实代码证据，并展示调用链、文件位置和代码片段。
-      </p>
+      <p class="task-chat__hint">回答会优先依据仓库认知图与真实代码理解，展示调用链和文件位置。</p>
     </div>
 
     <div v-if="isKnowledgeBuilding" class="task-chat__state task-chat__state--building">
       <strong>知识库构建中</strong>
-      <p>系统正在整理代码证据和仓库认知图，完成后会自动开放问答。</p>
+      <p>系统正在整理仓库认知图，完成后会自动开放问答。</p>
     </div>
 
     <div v-else-if="isKnowledgeFailed" class="task-chat__state task-chat__state--failed">
@@ -352,45 +350,19 @@ watch(
                       :key="step.key"
                       class="task-chat__chain-step"
                     >
-                      <button
-                        type="button"
+                      <div
                         class="task-chat__chain-step-button"
-                        :class="{
-                          'task-chat__chain-step-button--active': isStepSelected(
-                            message.message_id,
-                            step,
-                            evidence.path,
-                          ),
-                        }"
                         :data-testid="`chain-step-${step.key}`"
-                        :aria-pressed="isStepSelected(message.message_id, step, evidence.path)"
-                        @click="toggleStepHighlight(message.message_id, step, evidence.path)"
                       >
                         <p class="task-chat__chain-step-title">{{ step.title }}</p>
                         <p class="task-chat__chain-step-value">{{ step.value }}</p>
-                      </button>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
           </template>
-        </div>
-
-        <div v-if="message.citations.length" class="task-chat__citations">
-          <h4>代码证据</h4>
-          <div
-            v-for="citation in message.citations"
-            :key="`${citation.path}-${citation.start_line}-${citation.end_line}`"
-            class="task-chat__citation"
-            :class="{
-              'task-chat__citation--active': isCitationHighlighted(message.message_id, citation.path),
-            }"
-          >
-            <p class="task-chat__citation-path">{{ citation.path }}:{{ citation.start_line }}-{{ citation.end_line }}</p>
-            <p class="task-chat__citation-reason">{{ citation.reason }}</p>
-            <pre>{{ citation.snippet }}</pre>
-          </div>
         </div>
 
         <div v-if="message.supplemental_notes.length" class="task-chat__notes">

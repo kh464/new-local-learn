@@ -159,28 +159,9 @@ describe('TaskChatPanel', () => {
     expect(wrapper.text()).toContain('click')
     expect(wrapper.text()).toContain('GET /api/v1/tasks')
     expect(wrapper.text()).toContain('app/api/routes/tasks.py:list_tasks')
-    expect(wrapper.text()).toContain('代码证据')
+    expect(wrapper.text()).not.toContain('代码证据')
     expect(wrapper.text()).toContain('LLM')
     expect(wrapper.text()).toContain('LLM 规划')
-  })
-
-  it('highlights matching citations when a structured chain step is clicked', async () => {
-    const wrapper = mount(TaskChatPanel, {
-      props: {
-        taskId: 'task-chat-1',
-        status: createStatus(),
-      },
-    })
-
-    await flushPromises()
-
-    const handlerStep = wrapper.get('[data-testid="chain-step-frontend-handler"]')
-    await handlerStep.trigger('click')
-
-    const citations = wrapper.findAll('.task-chat__citation')
-    expect(citations).toHaveLength(2)
-    expect(citations[0].classes()).toContain('task-chat__citation--active')
-    expect(citations[1].classes()).not.toContain('task-chat__citation--active')
   })
 
   it('submits a new question and appends the exchange', async () => {
