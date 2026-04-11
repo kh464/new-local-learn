@@ -2,6 +2,9 @@ import pytest
 
 from app.core.chat_models import PlannerMetadata
 from app.core.models import TaskChatMessage, TaskChatResponse
+from app.services.chat.question_analyzer import QuestionAnalysis
+from app.services.code_graph.graph_expander import ExpandedSubgraph
+from app.services.code_graph.models import CodeEdge, CodeFileNode, CodeSnippetEvidence, CodeSymbolNode, RetrievalCandidate
 from app.services.chat.models import AgentToolCall, AgentObservation
 
 
@@ -167,6 +170,128 @@ class _PassValidator:
             "should_expand_context": False,
             "confidence_override": None,
         }
+
+
+class _HybridQuestionAnalyzer:
+    async def analyze(self, *, question, history):
+        return QuestionAnalysis(
+            normalized_question="解释 health 的职责",
+            question_type="module_responsibility",
+            answer_depth="detailed",
+            retrieval_objective="定位 health 函数及其下游调用",
+            target_entities=["app.main.health"],
+            preferred_item_types=["symbol", "file"],
+        )
+
+
+class _HybridExactRetriever:
+    def retrieve(self, **kwargs):
+        return [
+            RetrievalCandidate(
+                task_id="task-hybrid",
+                item_id="function:python:app/main.py:app.main.health",
+                item_type="symbol",
+                path="app/main.py",
+                symbol_id="function:python:app/main.py:app.main.health",
+                qualified_name="app.main.health",
+                score=120.0,
+                source="exact",
+                summary_zh="该函数负责健康检查入口。",
+            )
+        ]
+
+
+class _HybridSemanticRetriever:
+    async def retrieve(self, **kwargs):
+        return [
+            RetrievalCandidate(
+                task_id="task-hybrid",
+                item_id="function:python:app/main.py:app.main.health",
+                item_type="symbol",
+                path="app/main.py",
+                symbol_id="function:python:app/main.py:app.main.health",
+                qualified_name="app.main.health",
+                score=0.88,
+                source="semantic",
+                summary_zh="该函数负责健康检查入口。",
+            )
+        ]
+
+
+class _HybridRanker:
+    def rank(self, *, exact_hits, semantic_hits, limit):
+        return exact_hits[:1]
+
+
+class _HybridGraphExpander:
+    def expand(self, **kwargs):
+        return ExpandedSubgraph(
+            seeds=kwargs["seeds"],
+            files=[
+                CodeFileNode(
+                    task_id="task-hybrid",
+                    path="app/main.py",
+                    language="python",
+                    file_kind="source",
+                    summary_zh="该文件负责应用入口。",
+                    entry_role="backend_entry",
+                )
+            ],
+            symbols=[
+                CodeSymbolNode(
+                    task_id="task-hybrid",
+                    symbol_id="function:python:app/main.py:app.main.health",
+                    symbol_kind="function",
+                    name="health",
+                    qualified_name="app.main.health",
+                    file_path="app/main.py",
+                    start_line=4,
+                    end_line=5,
+                    summary_zh="该函数负责健康检查入口。",
+                    language="python",
+                )
+            ],
+            edges=[
+                CodeEdge(
+                    task_id="task-hybrid",
+                    from_symbol_id="file:python:app/main.py",
+                    to_symbol_id="function:python:app/main.py:app.main.health",
+                    edge_kind="contains",
+                    source_path="app/main.py",
+                    line=4,
+                )
+            ],
+        )
+
+
+class _HybridCodeLocator:
+    def locate(self, *, subgraph):
+        return [
+            CodeSnippetEvidence(
+                path="app/main.py",
+                start_line=4,
+                end_line=5,
+                snippet="def health():\n    return {'ok': True}",
+                symbol_id="function:python:app/main.py:app.main.health",
+                qualified_name="app.main.health",
+            )
+        ]
+
+
+class _HybridEvidenceBuilder:
+    def build(self, *, question, normalized_question, retrieval_objective, subgraph, snippets):
+        from app.services.code_graph.evidence_builder import EvidencePack
+
+        return EvidencePack(
+            question=question,
+            normalized_question=normalized_question,
+            retrieval_objective=retrieval_objective,
+            seeds=subgraph.seeds,
+            snippets=snippets,
+            graph_nodes=[{"kind": "symbol", "qualified_name": "app.main.health", "path": "app/main.py"}],
+            graph_edges=[{"kind": "contains", "from": "file:python:app/main.py", "to": "function:python:app/main.py:app.main.health"}],
+            summaries=["该函数负责健康检查入口。"],
+        )
 
 
 class _NeverReadyPlanner:
@@ -361,3 +486,41 @@ async def test_orchestrator_uses_composer_answer_source_when_llm_answer_is_gener
     )
 
     assert response.answer_source == "llm"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_prefers_hybrid_graph_pipeline_when_configured():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=_DonePlanner(),
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+        question_analyzer=_HybridQuestionAnalyzer(),
+        exact_retriever=_HybridExactRetriever(),
+        semantic_retriever=_HybridSemanticRetriever(),
+        hybrid_ranker=_HybridRanker(),
+        graph_expander=_HybridGraphExpander(),
+        code_locator=_HybridCodeLocator(),
+        graph_evidence_builder=_HybridEvidenceBuilder(),
+    )
+
+    response = await orchestrator.answer_question(
+        task_id="task-hybrid",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="health 做了什么",
+        history=[TaskChatMessage(message_id="u-1", role="user", content="解释一下")],
+    )
+
+    assert response.answer_source == "local"
+    assert response.citations
+    assert response.citations[0].path == "app/main.py"
+    assert response.graph_evidence
+    assert response.graph_evidence[0].path == "app/main.py"
+    assert response.planner_metadata is not None
+    assert response.planner_metadata.planning_source == "hybrid_rag"
+    assert response.planner_metadata.used_tools == ["exact_retriever", "semantic_retriever", "graph_expander", "code_locator"]

@@ -563,6 +563,9 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, obje
         knowledge_builder = _get_ctx_value(ctx, "knowledge_builder")
         if knowledge_builder is None:
             knowledge_builder = KnowledgeIndexBuilder(max_file_bytes=settings.max_file_bytes)
+        code_graph_builder = _get_ctx_value(ctx, "code_graph_builder")
+        summary_generation_builder = _get_ctx_value(ctx, "summary_generation_builder")
+        embedding_index_builder = _get_ctx_value(ctx, "embedding_index_builder")
         repo_map_builder = _get_ctx_value(ctx, "repo_map_builder")
         if repo_map_builder is None:
             repo_map_builder = RepoMapBuilder()
@@ -605,6 +608,64 @@ async def run_analysis_job(ctx, task_id: str, github_url: str) -> dict[str, obje
                 )
             )
         if knowledge_state is TaskKnowledgeState.READY:
+            if code_graph_builder is not None:
+                try:
+                    await asyncio.to_thread(
+                        code_graph_builder.build,
+                        task_id=task_id,
+                        repo_root=repo_path,
+                        db_path=artifacts.knowledge_db_path,
+                    )
+                except Exception as exc:
+                    _TASK_LOGGER.warning(
+                        json.dumps(
+                            {
+                                "message": "code_graph_build_failed",
+                                "task_id": task_id,
+                                "error": str(exc),
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
+            if summary_generation_builder is not None:
+                try:
+                    summary_build_result = summary_generation_builder.build(
+                        task_id=task_id,
+                        db_path=artifacts.knowledge_db_path,
+                        repo_root=repo_path,
+                    )
+                    if inspect.isawaitable(summary_build_result):
+                        await summary_build_result
+                except Exception as exc:
+                    _TASK_LOGGER.warning(
+                        json.dumps(
+                            {
+                                "message": "summary_generation_build_failed",
+                                "task_id": task_id,
+                                "error": str(exc),
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
+            if embedding_index_builder is not None:
+                try:
+                    embedding_build_result = embedding_index_builder.build(
+                        task_id=task_id,
+                        db_path=artifacts.knowledge_db_path,
+                    )
+                    if inspect.isawaitable(embedding_build_result):
+                        await embedding_build_result
+                except Exception as exc:
+                    _TASK_LOGGER.warning(
+                        json.dumps(
+                            {
+                                "message": "embedding_index_build_failed",
+                                "task_id": task_id,
+                                "error": str(exc),
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
             try:
                 await asyncio.to_thread(
                     repo_map_builder.build,

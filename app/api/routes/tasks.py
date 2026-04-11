@@ -32,11 +32,22 @@ from app.services.chat.llm_planning_agent import LlmPlanningAgent
 from app.services.chat.mcp_gateway import McpGateway
 from app.services.chat.mcp_tools import RepositoryQaToolSession
 from app.services.chat.orchestrator import TaskChatOrchestrator
+from app.services.chat.question_analyzer import QuestionAnalyzer
 from app.services.chat.rule_fallback_planner import RuleFallbackPlanner
+from app.services.code_graph.code_locator import CodeLocator
+from app.services.code_graph.evidence_builder import GraphEvidenceBuilder
+from app.services.code_graph.exact_retriever import ExactRetriever
+from app.services.code_graph.graph_expander import GraphExpander
+from app.services.code_graph.hybrid_ranker import HybridRanker
+from app.services.code_graph.semantic_retriever import SemanticRetriever
+from app.services.code_graph.storage import CodeGraphStore
+from app.services.knowledge.retriever import KnowledgeRetriever
+from app.services.llm.embedding_client import EmbeddingClient
 from app.services.llm.client import ChatCompletionClient
 from app.services.llm.config import load_runtime_config
 from app.services.llm.knowledge_chat import KnowledgeChatService
 from app.services.repo.fetcher import normalize_github_url
+from app.services.vector_store.qdrant_store import QdrantVectorStore
 from app.storage.artifacts import ArtifactPaths
 from app.storage.task_store import RedisTaskStore
 
@@ -87,6 +98,7 @@ async def _build_task_chat_orchestrator(
     db_path: Path | str,
     repo_map_path: Path | str | None,
     task_store: RedisTaskStore,
+    settings: Settings,
     planning_client: ChatCompletionClient | None,
     evidence_assembler: EvidenceAssembler,
     answer_composer: AnswerComposer,
@@ -94,6 +106,8 @@ async def _build_task_chat_orchestrator(
 ) -> TaskChatOrchestrator:
     result = await task_store.get_result(task_id)
     repo_root = Path(result.repo_path) if result is not None else Path(db_path).parent
+    graph_store = CodeGraphStore(db_path)
+    hybrid_graph_ready = graph_store.has_graph_index(task_id=task_id)
     session = RepositoryQaToolSession(
         task_id=task_id,
         repo_root=repo_root,
@@ -101,6 +115,41 @@ async def _build_task_chat_orchestrator(
         knowledge_db_path=db_path,
         task_store=task_store,
     )
+    question_analyzer = None
+    exact_retriever = None
+    hybrid_ranker = None
+    graph_expander = None
+    code_locator = None
+    graph_evidence_builder = None
+    if hybrid_graph_ready:
+        question_analyzer = (
+            QuestionAnalyzer(llm_client=planning_client) if planning_client is not None else QuestionAnalyzer()
+        )
+        exact_retriever = ExactRetriever(graph_store=graph_store, chunk_retriever=KnowledgeRetriever())
+        hybrid_ranker = HybridRanker()
+        graph_expander = GraphExpander(graph_store=graph_store)
+        code_locator = CodeLocator(repo_root=repo_root)
+        graph_evidence_builder = GraphEvidenceBuilder()
+    semantic_retriever = None
+    if (
+        hybrid_graph_ready
+        and getattr(settings, "vector_store_enabled", False)
+        and getattr(settings, "llm_enabled", False)
+        and settings.llm_config_path.is_file()
+    ):
+        try:
+            runtime_config = load_runtime_config(settings.llm_config_path, settings.llm_profile)
+            semantic_retriever = SemanticRetriever(
+                embedding_client=EmbeddingClient(runtime_config),
+                vector_store=QdrantVectorStore(
+                    url=settings.vector_store_url,
+                    api_key=settings.vector_store_api_key,
+                ),
+                collection_name=settings.vector_store_collection,
+                embedding_model=settings.embedding_model,
+            )
+        except Exception:
+            semantic_retriever = None
     return TaskChatOrchestrator(
         planning_agent=LlmPlanningAgent(client=planning_client) if planning_client is not None else None,
         fallback_planner=RuleFallbackPlanner(),
@@ -108,6 +157,13 @@ async def _build_task_chat_orchestrator(
         evidence_assembler=evidence_assembler,
         answer_composer=answer_composer,
         answer_validator=answer_validator,
+        question_analyzer=question_analyzer,
+        exact_retriever=exact_retriever,
+        semantic_retriever=semantic_retriever,
+        hybrid_ranker=hybrid_ranker,
+        graph_expander=graph_expander,
+        code_locator=code_locator,
+        graph_evidence_builder=graph_evidence_builder,
     )
 
 
@@ -135,6 +191,7 @@ def get_knowledge_chat_service(request: Request) -> KnowledgeChatService:
             db_path=kwargs["db_path"],
             repo_map_path=kwargs.get("repo_map_path"),
             task_store=task_store,
+            settings=settings,
             planning_client=planning_client,
             evidence_assembler=evidence_assembler,
             answer_composer=answer_composer,
@@ -562,6 +619,7 @@ async def task_chat(
         supplemental_notes=answer.supplemental_notes,
         confidence=answer.confidence,
         answer_source=answer.answer_source,
+        answer_debug=answer.answer_debug,
         planner_metadata=answer.planner_metadata,
     )
     await store.append_chat_message(task_id, assistant_message)

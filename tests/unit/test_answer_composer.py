@@ -60,6 +60,9 @@ async def test_answer_composer_uses_llm_when_client_available():
     assert "先直接回答用户问题" in captured["system_prompt"]
     assert "区分“已确认事实”和“推断”" in captured["system_prompt"]
     assert "app/main.py" in captured["user_prompt"]
+    assert "confirmed_facts" in captured["user_prompt"]
+    assert "inferences" in captured["user_prompt"]
+    assert "evidence_gaps" in captured["user_prompt"]
 
 
 @pytest.mark.asyncio
@@ -78,3 +81,27 @@ async def test_answer_composer_falls_back_to_local_when_llm_fails():
 
     assert result["answer_source"] == "local"
     assert "web/src/App.tsx -> GET /health -> app/main.py:health" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_local_fallback_reports_missing_evidence():
+    composer = AnswerComposer()
+
+    result = await composer.compose(
+        question="这个仓库是否具有知识库？",
+        evidence_pack=EvidencePack(
+            question="这个仓库是否具有知识库？",
+            planning_source="hybrid_rag",
+            files=[],
+            symbols=[],
+            citations=[],
+            key_findings=[],
+            gaps=["尚未定位到知识库入口文件", "尚未命中相关代码片段"],
+        ),
+        history=[],
+    )
+
+    assert result["answer_source"] == "local"
+    assert "证据不足" in result["answer"]
+    assert "知识库" in result["answer"]
+    assert any("尚未定位到知识库入口文件" in note for note in result["supplemental_notes"])

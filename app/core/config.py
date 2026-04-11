@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     llm_profile: str | None = None
     llm_max_prompt_chars: int = 20000
     llm_max_snippet_chars: int = 1200
+    vector_store_enabled: bool = False
+    vector_store_provider: str = "qdrant"
+    vector_store_collection: str = "repo_semantic_items"
+    vector_store_url: str = "http://localhost:6333"
+    vector_store_api_key: str | None = None
+    embedding_model: str = "text-embedding-3-small"
 
     @field_validator("allowed_github_hosts", mode="before")
     @classmethod
@@ -85,4 +91,12 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             normalized = value.strip()
             return normalized or None
+        return value
+
+    @field_validator("vector_store_provider", mode="before")
+    @classmethod
+    def _normalize_vector_store_provider(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or "qdrant"
         return value

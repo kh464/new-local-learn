@@ -4,8 +4,8 @@ import inspect
 from typing import Any
 
 from app.core.chat_models import PlannerMetadata
-from app.core.models import TaskChatCitation, TaskChatResponse, TaskGraphEvidence
-from app.services.chat.models import AgentObservation, EvidencePack, PlannerResult
+from app.core.models import AnswerDebug, TaskChatCitation, TaskChatResponse, TaskGraphEvidence
+from app.services.chat.models import AgentObservation, EvidenceItem, EvidencePack, PlannerResult
 
 
 class TaskChatOrchestrator:
@@ -18,6 +18,13 @@ class TaskChatOrchestrator:
         evidence_assembler,
         answer_composer,
         answer_validator,
+        question_analyzer=None,
+        exact_retriever=None,
+        semantic_retriever=None,
+        hybrid_ranker=None,
+        graph_expander=None,
+        code_locator=None,
+        graph_evidence_builder=None,
         max_loops: int = 5,
     ) -> None:
         self._planning_agent = planning_agent
@@ -26,6 +33,13 @@ class TaskChatOrchestrator:
         self._evidence_assembler = evidence_assembler
         self._answer_composer = answer_composer
         self._answer_validator = answer_validator
+        self._question_analyzer = question_analyzer
+        self._exact_retriever = exact_retriever
+        self._semantic_retriever = semantic_retriever
+        self._hybrid_ranker = hybrid_ranker
+        self._graph_expander = graph_expander
+        self._code_locator = code_locator
+        self._graph_evidence_builder = graph_evidence_builder
         self._max_loops = max(1, max_loops)
 
     async def answer_question(
@@ -37,7 +51,17 @@ class TaskChatOrchestrator:
         question: str,
         history: list,
     ) -> TaskChatResponse:
-        del task_id, db_path, repo_map_path
+        del repo_map_path
+
+        if self._can_use_hybrid_graph_pipeline():
+            return await self._answer_with_hybrid_graph_pipeline(
+                task_id=task_id,
+                db_path=db_path,
+                question=question,
+                history=history,
+            )
+
+        del task_id, db_path
 
         observations: list[AgentObservation] = []
         used_tools: list[str] = []
@@ -115,6 +139,7 @@ class TaskChatOrchestrator:
             supplemental_notes=list(draft["supplemental_notes"]),
             confidence=confidence,
             answer_source=draft["answer_source"],
+            answer_debug=self._build_answer_debug(evidence_pack),
             planner_metadata=PlannerMetadata(
                 planning_source=planning_source,
                 loop_count=loop_count,
@@ -122,6 +147,146 @@ class TaskChatOrchestrator:
                 fallback_used=fallback_used,
                 search_queries=list(getattr(last_plan, "search_queries", []) or []),
             ),
+        )
+
+    def _can_use_hybrid_graph_pipeline(self) -> bool:
+        return all(
+            item is not None
+            for item in (
+                self._question_analyzer,
+                self._exact_retriever,
+                self._hybrid_ranker,
+                self._graph_expander,
+                self._code_locator,
+                self._graph_evidence_builder,
+            )
+        )
+
+    async def _answer_with_hybrid_graph_pipeline(
+        self,
+        *,
+        task_id: str,
+        db_path,
+        question: str,
+        history: list,
+    ) -> TaskChatResponse:
+        history_payload = [{"role": item.role, "content": item.content} for item in history]
+        analysis = await self._maybe_await(
+            self._question_analyzer.analyze(question=question, history=history_payload)
+        )
+        exact_hits = self._exact_retriever.retrieve(
+            task_id=task_id,
+            db_path=db_path,
+            question=question,
+            normalized_question=analysis.normalized_question,
+            target_entities=list(analysis.target_entities),
+            search_queries=list(analysis.search_queries),
+            limit=8,
+        )
+        semantic_hits = []
+        if self._semantic_retriever is not None:
+            semantic_hits = await self._maybe_await(
+                self._semantic_retriever.retrieve(
+                    task_id=task_id,
+                    question=analysis.normalized_question,
+                    item_types=list(analysis.preferred_item_types),
+                    language="python",
+                    limit=8,
+                )
+            )
+        ranked_hits = self._hybrid_ranker.rank(
+            exact_hits=exact_hits,
+            semantic_hits=semantic_hits,
+            limit=8,
+        )
+        subgraph = self._graph_expander.expand(
+            task_id=task_id,
+            seeds=ranked_hits,
+            max_hops=2,
+            max_nodes=20,
+        )
+        snippets = self._code_locator.locate(subgraph=subgraph)
+        graph_evidence_pack = self._graph_evidence_builder.build(
+            question=question,
+            normalized_question=analysis.normalized_question,
+            retrieval_objective=analysis.retrieval_objective,
+            subgraph=subgraph,
+            snippets=snippets,
+        )
+        chat_evidence_pack = self._convert_graph_evidence(graph_evidence_pack)
+        draft = await self._compose_answer(question=question, evidence_pack=chat_evidence_pack, history=history)
+        validation = await self._validate_answer(
+            question=question,
+            answer=draft["answer"],
+            supplemental_notes=draft["supplemental_notes"],
+            evidence_pack=chat_evidence_pack,
+        )
+        confidence = draft["confidence"]
+        confidence_override = validation.get("confidence_override")
+        if confidence_override in {"high", "medium", "low"}:
+            confidence = confidence_override
+
+        used_tools = ["exact_retriever", "graph_expander", "code_locator"]
+        if semantic_hits:
+            used_tools.insert(1, "semantic_retriever")
+
+        return TaskChatResponse(
+            answer=draft["answer"],
+            citations=self._build_citations(chat_evidence_pack),
+            graph_evidence=self._build_graph_evidence(chat_evidence_pack),
+            supplemental_notes=list(draft["supplemental_notes"]),
+            confidence=confidence,
+            answer_source=draft["answer_source"],
+            answer_debug=self._build_answer_debug(chat_evidence_pack),
+            planner_metadata=PlannerMetadata(
+                planning_source="hybrid_rag",
+                loop_count=1,
+                used_tools=used_tools,
+                fallback_used=False,
+                search_queries=list(analysis.search_queries),
+            ),
+        )
+
+    def _convert_graph_evidence(self, graph_pack) -> EvidencePack:
+        files = [
+            EvidenceItem(
+                kind="file",
+                path=str(node.get("path") or ""),
+                title=str(node.get("path") or node.get("kind") or ""),
+                summary=str(node.get("summary_zh") or ""),
+            )
+            for node in graph_pack.graph_nodes
+            if node.get("kind") == "file"
+        ]
+        symbols = [
+            EvidenceItem(
+                kind="symbol",
+                path=str(node.get("path") or ""),
+                title=str(node.get("qualified_name") or node.get("kind") or ""),
+                summary=str(node.get("summary_zh") or ""),
+            )
+            for node in graph_pack.graph_nodes
+            if node.get("kind") != "file"
+        ]
+        citations = [
+            EvidenceItem(
+                kind="citation",
+                path=item.path,
+                title=item.qualified_name or item.path,
+                summary=item.qualified_name or "",
+                start_line=item.start_line,
+                end_line=item.end_line,
+                snippet=item.snippet,
+            )
+            for item in graph_pack.snippets
+        ]
+        return EvidencePack(
+            question=graph_pack.question,
+            planning_source="hybrid_rag",
+            files=files,
+            symbols=symbols,
+            citations=citations,
+            key_findings=list(graph_pack.summaries),
         )
 
     async def _list_available_tools(self) -> list[str]:
@@ -241,6 +406,16 @@ class TaskChatOrchestrator:
                 )
             )
         return evidence
+
+    def _build_answer_debug(self, evidence_pack: EvidencePack) -> AnswerDebug | None:
+        confirmed_facts = [item.strip() for item in evidence_pack.key_findings if item and item.strip()]
+        evidence_gaps = [item.strip() for item in evidence_pack.gaps if item and item.strip()]
+        if not confirmed_facts and not evidence_gaps:
+            return None
+        return AnswerDebug(
+            confirmed_facts=confirmed_facts[:5],
+            evidence_gaps=evidence_gaps[:5],
+        )
 
     def _graph_kind(self, kind: str) -> str:
         if kind in {"entrypoint", "call_chain", "edge", "symbol"}:

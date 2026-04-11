@@ -64,6 +64,11 @@ class TaskGraphEvidence(BaseModel):
     path: str | None = None
 
 
+class AnswerDebug(BaseModel):
+    confirmed_facts: list[str] = Field(default_factory=list)
+    evidence_gaps: list[str] = Field(default_factory=list)
+
+
 class TaskChatMessage(BaseModel):
     message_id: str
     role: Literal["user", "assistant"]
@@ -73,6 +78,7 @@ class TaskChatMessage(BaseModel):
     supplemental_notes: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"] | None = None
     answer_source: Literal["llm", "local"] | None = None
+    answer_debug: AnswerDebug | None = None
     planner_metadata: PlannerMetadata | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -96,6 +102,7 @@ class TaskChatResponse(BaseModel):
     supplemental_notes: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"] = "medium"
     answer_source: Literal["llm", "local"] = "local"
+    answer_debug: AnswerDebug | None = None
     planner_metadata: PlannerMetadata | None = None
 
 

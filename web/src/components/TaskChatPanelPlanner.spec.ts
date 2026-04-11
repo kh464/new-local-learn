@@ -37,19 +37,23 @@ describe('TaskChatPanel planner metadata', () => {
     fetchTaskChatMessagesMock.mockReset()
   })
 
-  it('shows planner debug metadata including search queries for assistant messages', async () => {
+  it('shows planner and answer debug metadata for assistant messages', async () => {
     fetchTaskChatMessagesMock.mockResolvedValue({
       task_id: 'task-chat-planner',
       messages: [
         {
           message_id: 'assistant-1',
           role: 'assistant',
-          content: '这是一条基于真实代码证据的保守回答。',
+          content: '这是基于真实代码证据的保守回答。',
           citations: [],
           graph_evidence: [],
           supplemental_notes: [],
           confidence: 'medium',
           answer_source: 'llm',
+          answer_debug: {
+            confirmed_facts: ['已确认命中 KnowledgeRetriever', '已确认仓库存在检索实现'],
+            evidence_gaps: ['尚未定位向量检索入口'],
+          },
           planner_metadata: {
             planning_source: 'rule',
             loop_count: 1,
@@ -76,5 +80,7 @@ describe('TaskChatPanel planner metadata', () => {
     expect(wrapper.text()).toContain('知识库')
     expect(wrapper.text()).toContain('knowledge')
     expect(wrapper.text()).toContain('retriever')
+    expect(wrapper.text()).toContain('已确认命中 KnowledgeRetriever')
+    expect(wrapper.text()).toContain('尚未定位向量检索入口')
   })
 })

@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from app.core.models import (
+    AnswerDebug,
     AnalysisResult,
     PlannerMetadata,
     TaskChatCitation,
@@ -58,6 +59,10 @@ async def test_task_chat_endpoint_returns_graph_evidence_for_ready_task(
                 supplemental_notes=[],
                 confidence="high",
                 answer_source="llm",
+                answer_debug=AnswerDebug(
+                    confirmed_facts=["已确认入口在 app/main.py", "已确认 health 路由存在"],
+                    evidence_gaps=["尚未展开更深层下游调用"],
+                ),
                 planner_metadata=PlannerMetadata(
                     planning_source="llm",
                     loop_count=2,
@@ -100,6 +105,11 @@ async def test_task_chat_endpoint_returns_graph_evidence_for_ready_task(
     assert payload["assistant_message"]["graph_evidence"][0]["kind"] == "entrypoint"
     assert payload["assistant_message"]["graph_evidence"][1]["kind"] == "call_chain"
     assert payload["assistant_message"]["answer_source"] == "llm"
+    assert payload["assistant_message"]["answer_debug"]["confirmed_facts"] == [
+        "已确认入口在 app/main.py",
+        "已确认 health 路由存在",
+    ]
+    assert payload["assistant_message"]["answer_debug"]["evidence_gaps"] == ["尚未展开更深层下游调用"]
     assert payload["assistant_message"]["planner_metadata"]["planning_source"] == "llm"
     assert payload["assistant_message"]["planner_metadata"]["loop_count"] == 2
     assert payload["assistant_message"]["planner_metadata"]["used_tools"] == ["trace_call_chain", "open_file"]
@@ -112,6 +122,7 @@ async def test_task_chat_endpoint_returns_graph_evidence_for_ready_task(
     assert history_payload["messages"][0]["role"] == "user"
     assert history_payload["messages"][1]["role"] == "assistant"
     assert history_payload["messages"][1]["graph_evidence"][0]["kind"] == "entrypoint"
+    assert history_payload["messages"][1]["answer_debug"]["confirmed_facts"][0] == "已确认入口在 app/main.py"
     assert history_payload["messages"][1]["planner_metadata"]["planning_source"] == "llm"
     assert history_payload["messages"][1]["planner_metadata"]["search_queries"] == ["health", "app/main.py"]
 

@@ -5,6 +5,148 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+_SQLITE_KNOWLEDGE_SCHEMA = """
+PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS knowledge_document (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    language TEXT,
+    size_bytes INTEGER NOT NULL,
+    is_indexed INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(task_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunk (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    document_id INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    symbol_name TEXT,
+    chunk_kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    token_estimate INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES knowledge_document(id)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunk_fts USING fts5(
+    task_id,
+    path,
+    symbol_name,
+    summary,
+    content
+);
+
+CREATE TABLE IF NOT EXISTS code_file (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    language TEXT NOT NULL,
+    file_kind TEXT NOT NULL,
+    summary_zh TEXT NOT NULL DEFAULT '',
+    entry_role TEXT,
+    responsibility_zh TEXT NOT NULL DEFAULT '',
+    upstream_zh TEXT NOT NULL DEFAULT '',
+    downstream_zh TEXT NOT NULL DEFAULT '',
+    keywords_zh TEXT NOT NULL DEFAULT '[]',
+    summary_source TEXT NOT NULL DEFAULT 'rule',
+    summary_version INTEGER NOT NULL DEFAULT 0,
+    summary_confidence TEXT NOT NULL DEFAULT 'low',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(task_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS code_symbol (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    symbol_id TEXT NOT NULL,
+    symbol_kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    qualified_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    parent_symbol_id TEXT,
+    signature TEXT,
+    summary_zh TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL,
+    input_output_zh TEXT NOT NULL DEFAULT '',
+    side_effects_zh TEXT NOT NULL DEFAULT '',
+    call_targets_zh TEXT NOT NULL DEFAULT '',
+    callers_zh TEXT NOT NULL DEFAULT '',
+    summary_source TEXT NOT NULL DEFAULT 'rule',
+    summary_version INTEGER NOT NULL DEFAULT 0,
+    summary_confidence TEXT NOT NULL DEFAULT 'low',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(task_id, symbol_id)
+);
+
+CREATE TABLE IF NOT EXISTS code_edge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    from_symbol_id TEXT NOT NULL,
+    to_symbol_id TEXT NOT NULL,
+    edge_kind TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    line INTEGER,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS code_unresolved_call (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    caller_symbol_id TEXT NOT NULL,
+    callee_name TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    line INTEGER,
+    raw_expr TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS embedding_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    item_ref_id TEXT NOT NULL,
+    vector_store TEXT NOT NULL,
+    collection_name TEXT NOT NULL,
+    vector_point_id TEXT NOT NULL,
+    embedding_model TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(task_id, item_type, item_ref_id)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS code_file_fts USING fts5(
+    task_id,
+    path,
+    summary_zh
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS code_symbol_fts USING fts5(
+    task_id,
+    symbol_id,
+    name,
+    qualified_name,
+    signature,
+    summary_zh
+);
+"""
+
+
 @dataclass(frozen=True)
 class KnowledgeDocumentRecord:
     task_id: str
@@ -55,48 +197,7 @@ class SQLiteKnowledgeStore:
     def initialize(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-
-                CREATE TABLE IF NOT EXISTS knowledge_document (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    file_type TEXT NOT NULL,
-                    language TEXT,
-                    size_bytes INTEGER NOT NULL,
-                    is_indexed INTEGER NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(task_id, path)
-                );
-
-                CREATE TABLE IF NOT EXISTS knowledge_chunk (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id TEXT NOT NULL,
-                    document_id INTEGER NOT NULL,
-                    chunk_index INTEGER NOT NULL,
-                    path TEXT NOT NULL,
-                    start_line INTEGER NOT NULL,
-                    end_line INTEGER NOT NULL,
-                    symbol_name TEXT,
-                    chunk_kind TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    token_estimate INTEGER NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(document_id) REFERENCES knowledge_document(id)
-                );
-
-                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunk_fts USING fts5(
-                    task_id,
-                    path,
-                    symbol_name,
-                    summary,
-                    content
-                );
-                """
-            )
+            connection.executescript(_SQLITE_KNOWLEDGE_SCHEMA)
 
     def upsert_document(self, record: KnowledgeDocumentRecord) -> int:
         with self._connect() as connection:

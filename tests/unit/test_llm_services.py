@@ -115,6 +115,51 @@ async def test_chat_completion_client_uses_profile_configuration():
 
 
 @pytest.mark.asyncio
+async def test_embedding_client_uses_embeddings_endpoint():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"embedding": [0.1, 0.2, 0.3]},
+                    {"embedding": [0.4, 0.5, 0.6]},
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    from app.services.llm.config import GenerationConfig, ProviderConfig, RuntimeConfig, RoutingProfile
+    from app.services.llm.embedding_client import EmbeddingClient
+
+    client = EmbeddingClient(
+        RuntimeConfig(
+            timeout_seconds=30,
+            max_retries=1,
+            profile=RoutingProfile(provider="demo", model="demo-chat-model"),
+            provider=ProviderConfig(
+                name="demo",
+                base_url="https://example.test/v1",
+                api_key="secret-token",
+                generation=GenerationConfig(),
+            ),
+        ),
+        transport=transport,
+    )
+
+    vectors = await client.embed_texts(["first", "second"], model="demo-embed-model")
+
+    assert vectors == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+    assert requests[0].url == httpx.URL("https://example.test/v1/embeddings")
+    payload = json.loads(requests[0].content.decode("utf-8"))
+    assert payload["model"] == "demo-embed-model"
+    assert payload["input"] == ["first", "second"]
+
+
+@pytest.mark.asyncio
 async def test_tutorial_llm_enhancer_requires_chinese_output():
     captured: dict[str, str] = {}
 

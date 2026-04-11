@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from app.storage.knowledge_store import KnowledgeChunkRecord, KnowledgeDocumentRecord, SQLiteKnowledgeStore
 
 
@@ -43,3 +45,22 @@ def test_sqlite_knowledge_store_persists_documents_chunks_and_fts_search(tmp_pat
     assert results[0].path == "app/main.py"
     assert results[0].start_line == 1
     assert "FastAPI" in results[0].content
+
+
+def test_sqlite_knowledge_store_initializes_code_graph_tables(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    store = SQLiteKnowledgeStore(db_path)
+
+    store.initialize()
+
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+        ).fetchall()
+
+    object_names = {row[0] for row in rows}
+    assert "code_file" in object_names
+    assert "code_symbol" in object_names
+    assert "code_edge" in object_names
+    assert "code_unresolved_call" in object_names
+    assert "embedding_registry" in object_names

@@ -82,7 +82,7 @@ async def test_analyze_flow_runs_job_and_exposes_result_artifacts(fake_job_conte
 
     assert markdown_response.status_code == 200
     assert markdown_response.headers["content-type"].startswith("text/markdown")
-    assert "# Analysis Report" in markdown_response.text
+    assert "# 仓库分析报告：" in markdown_response.text
 
     assert html_response.status_code == 200
     assert html_response.headers["content-type"].startswith("text/html")

@@ -3,12 +3,18 @@ import logging
 from arq.connections import RedisSettings
 
 from app.core.config import Settings
+from app.services.code_graph.embedding_indexer import EmbeddingIndexBuildService
+from app.services.code_graph.llm_summary_service import LlmSummaryService
+from app.services.code_graph.pipeline import CodeGraphBuildPipeline
+from app.services.code_graph.summary_generation_service import SummaryGenerationService
+from app.services.llm.embedding_client import EmbeddingClient
 from app.services.llm.client import ChatCompletionClient
 from app.services.llm.config import load_runtime_config
 from app.services.llm.report_enhancer import TutorialLLMEnhancer
 from app.services.knowledge.index_builder import KnowledgeIndexBuilder
 from app.services.knowledge.repo_map_builder import RepoMapBuilder
 from app.services.repo.fetcher import clone_github_repo, read_repository_files
+from app.services.vector_store.qdrant_store import QdrantVectorStore
 from app.storage.task_store import RedisTaskStore
 from app.tasks.jobs import run_analysis_job
 
@@ -26,10 +32,15 @@ async def startup(ctx: dict) -> None:
     ctx["clone_repo"] = clone_repo_with_settings
     ctx["read_files"] = read_repository_files
     ctx["knowledge_builder"] = KnowledgeIndexBuilder(max_file_bytes=settings.max_file_bytes)
+    ctx["code_graph_builder"] = CodeGraphBuildPipeline()
+    ctx["summary_generation_builder"] = _build_summary_generation_builder()
     ctx["repo_map_builder"] = RepoMapBuilder()
     tutorial_generator = _build_tutorial_generator()
     if tutorial_generator is not None:
         ctx["tutorial_generator"] = tutorial_generator
+    embedding_index_builder = _build_embedding_index_builder()
+    if embedding_index_builder is not None:
+        ctx["embedding_index_builder"] = embedding_index_builder
 
 
 def _build_tutorial_generator():
@@ -49,6 +60,41 @@ def _build_tutorial_generator():
         max_snippet_chars=settings.llm_max_snippet_chars,
     )
     return enhancer.generate_tutorial
+
+
+def _build_summary_generation_builder():
+    llm_summary_service = None
+    if settings.llm_enabled and settings.llm_config_path.is_file():
+        try:
+            runtime_config = load_runtime_config(settings.llm_config_path, settings.llm_profile)
+            llm_summary_service = LlmSummaryService(client=ChatCompletionClient(runtime_config))
+        except Exception as exc:
+            _WORKER_LOGGER.warning("Failed to load summary LLM config: %s", exc)
+    return SummaryGenerationService(llm_summary_service=llm_summary_service)
+
+
+def _build_embedding_index_builder():
+    if not settings.vector_store_enabled:
+        return None
+    if not settings.llm_enabled:
+        return None
+    if not settings.llm_config_path.is_file():
+        return None
+    try:
+        runtime_config = load_runtime_config(settings.llm_config_path, settings.llm_profile)
+    except Exception as exc:
+        _WORKER_LOGGER.warning("Failed to load embedding config: %s", exc)
+        return None
+
+    return EmbeddingIndexBuildService(
+        embedding_client=EmbeddingClient(runtime_config),
+        vector_store=QdrantVectorStore(
+            url=settings.vector_store_url,
+            api_key=settings.vector_store_api_key,
+        ),
+        collection_name=settings.vector_store_collection,
+        embedding_model=settings.embedding_model,
+    )
 
 
 class WorkerSettings:

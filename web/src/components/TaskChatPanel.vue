@@ -83,6 +83,14 @@ function renderPlanningSource(source?: string | null): string {
   return ''
 }
 
+function hasPlannerDebug(message: TaskChatMessage): boolean {
+  return Boolean(
+    message.planner_metadata?.search_queries?.length ||
+      message.answer_debug?.confirmed_facts?.length ||
+      message.answer_debug?.evidence_gaps?.length,
+  )
+}
+
 function groupGraphEvidence(graphEvidence?: TaskGraphEvidence[]) {
   const evidence = graphEvidence ?? []
   return {
@@ -317,11 +325,11 @@ watch(
         <p class="task-chat__content">{{ message.content }}</p>
 
         <div
-          v-if="message.role === 'assistant' && message.planner_metadata?.search_queries?.length"
+          v-if="message.role === 'assistant' && hasPlannerDebug(message)"
           class="task-chat__planner-debug"
         >
           <h4>规划检索词</h4>
-          <div class="task-chat__planner-query-list">
+          <div v-if="message.planner_metadata?.search_queries?.length" class="task-chat__planner-query-list">
             <span
               v-for="query in message.planner_metadata.search_queries"
               :key="query"
@@ -329,6 +337,18 @@ watch(
             >
               {{ query }}
             </span>
+          </div>
+          <div v-if="message.answer_debug?.confirmed_facts?.length" class="task-chat__planner-section">
+            <h5>已确认事实</h5>
+            <ul class="task-chat__planner-list">
+              <li v-for="fact in message.answer_debug.confirmed_facts" :key="fact">{{ fact }}</li>
+            </ul>
+          </div>
+          <div v-if="message.answer_debug?.evidence_gaps?.length" class="task-chat__planner-section">
+            <h5>证据缺口</h5>
+            <ul class="task-chat__planner-list">
+              <li v-for="gap in message.answer_debug.evidence_gaps" :key="gap">{{ gap }}</li>
+            </ul>
           </div>
         </div>
 
@@ -439,6 +459,7 @@ watch(
 .task-chat__role,
 .task-chat__content,
 .task-chat__planner-debug h4,
+.task-chat__planner-section h5,
 .task-chat__graph h4,
 .task-chat__graph-item p,
 .task-chat__citation p,
@@ -565,6 +586,19 @@ watch(
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.task-chat__planner-section {
+  display: grid;
+  gap: 6px;
+}
+
+.task-chat__planner-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
 }
 
 .task-chat__planner-query {

@@ -164,6 +164,52 @@ async def test_run_analysis_job_builds_knowledge_after_docs(fake_job_context):
     assert final_status.knowledge_error is None
 
 
+async def test_run_analysis_job_builds_code_graph_after_knowledge(fake_job_context):
+    captured: dict[str, object] = {}
+
+    class FakeCodeGraphBuilder:
+        def build(self, *, task_id: str, repo_root, db_path):
+            captured["task_id"] = task_id
+            captured["repo_root"] = Path(repo_root)
+            captured["db_path"] = Path(db_path)
+            return {
+                "files_count": 2,
+                "symbols_count": 3,
+                "edges_count": 4,
+                "unresolved_calls_count": 1,
+                "skipped_paths": [],
+            }
+
+    fake_job_context["code_graph_builder"] = FakeCodeGraphBuilder()
+
+    result = await run_analysis_job(fake_job_context, "task-code-graph-ready", "https://github.com/octocat/Hello-World")
+
+    assert result["state"] == TaskState.SUCCEEDED.value
+    assert captured["task_id"] == "task-code-graph-ready"
+    assert captured["repo_root"].is_dir() is True
+    assert captured["db_path"].name == "knowledge.db"
+    assert captured["db_path"].is_file() is True
+
+
+async def test_run_analysis_job_builds_embedding_index_after_code_graph(fake_job_context):
+    captured: dict[str, object] = {}
+
+    class FakeEmbeddingIndexBuilder:
+        async def build(self, *, task_id: str, db_path):
+            captured["task_id"] = task_id
+            captured["db_path"] = Path(db_path)
+            return 5
+
+    fake_job_context["embedding_index_builder"] = FakeEmbeddingIndexBuilder()
+
+    result = await run_analysis_job(fake_job_context, "task-embedding-ready", "https://github.com/octocat/Hello-World")
+
+    assert result["state"] == TaskState.SUCCEEDED.value
+    assert captured["task_id"] == "task-embedding-ready"
+    assert captured["db_path"].name == "knowledge.db"
+    assert captured["db_path"].is_file() is True
+
+
 async def test_run_analysis_job_keeps_result_when_knowledge_build_fails(fake_job_context):
     class FailingKnowledgeBuilder:
         def build(self, *, task_id: str, repo_path, db_path):
@@ -245,6 +291,7 @@ async def test_worker_startup_registers_runtime_dependencies(fakeredis_client):
     assert callable(ctx["clone_repo"])
     assert callable(ctx["read_files"])
     assert hasattr(ctx["knowledge_builder"], "build")
+    assert hasattr(ctx["code_graph_builder"], "build")
     assert hasattr(ctx["repo_map_builder"], "build")
 
 
@@ -271,6 +318,57 @@ async def test_worker_startup_clone_repo_uses_configured_timeout(fakeredis_clien
     assert captured["github_url"] == "https://github.com/octocat/Hello-World"
     assert captured["destination"] == "repo-dir"
     assert captured["timeout_seconds"] == 12
+
+
+async def test_worker_startup_registers_embedding_index_builder_when_vector_store_enabled(fakeredis_client, tmp_path, monkeypatch):
+    config_path = tmp_path / "llm.yaml"
+    config_path.write_text(
+        """
+version: 1
+llm:
+  default_profile: chat
+  timeout_seconds: 45
+  max_retries: 1
+  providers:
+    demo:
+      enabled: true
+      base_url: https://example.test/v1
+      api_key: secret-token
+  routing:
+    profiles:
+      chat:
+        provider: demo
+        model: demo-chat-model
+""".strip(),
+        encoding="utf-8",
+    )
+
+    original_enabled = worker_module.settings.llm_enabled
+    original_config_path = worker_module.settings.llm_config_path
+    original_vector_enabled = getattr(worker_module.settings, "vector_store_enabled", False)
+    original_vector_url = getattr(worker_module.settings, "vector_store_url", "http://localhost:6333")
+    original_vector_api_key = getattr(worker_module.settings, "vector_store_api_key", None)
+    original_embedding_model = getattr(worker_module.settings, "embedding_model", "text-embedding-3-small")
+
+    try:
+        worker_module.settings.llm_enabled = True
+        worker_module.settings.llm_config_path = config_path
+        worker_module.settings.vector_store_enabled = True
+        worker_module.settings.vector_store_url = "https://qdrant.test"
+        worker_module.settings.vector_store_api_key = "qdrant-secret"
+        worker_module.settings.embedding_model = "demo-embed-model"
+
+        ctx = {"redis": fakeredis_client}
+        await startup(ctx)
+
+        assert hasattr(ctx["embedding_index_builder"], "build")
+    finally:
+        worker_module.settings.llm_enabled = original_enabled
+        worker_module.settings.llm_config_path = original_config_path
+        worker_module.settings.vector_store_enabled = original_vector_enabled
+        worker_module.settings.vector_store_url = original_vector_url
+        worker_module.settings.vector_store_api_key = original_vector_api_key
+        worker_module.settings.embedding_model = original_embedding_model
 
 
 async def test_worker_startup_registers_tutorial_generator_when_llm_is_configured(

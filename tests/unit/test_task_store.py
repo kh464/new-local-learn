@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.models import TaskChatCitation, TaskChatMessage, TaskState, TaskStatus
+from app.core.models import AnswerDebug, TaskChatCitation, TaskChatMessage, TaskState, TaskStatus
 from app.storage.task_store import RedisTaskStore
 
 
@@ -201,3 +201,25 @@ async def test_task_store_chat_messages_round_trip(fakeredis_client):
 
     assert [message.message_id for message in messages] == ["user-1", "assistant-1"]
     assert messages[1].citations[0].path == "app/main.py"
+
+
+async def test_task_store_chat_messages_preserve_answer_debug(fakeredis_client):
+    store = RedisTaskStore(fakeredis_client)
+    await store.append_chat_message(
+        "task-chat-debug",
+        TaskChatMessage(
+            message_id="assistant-debug-1",
+            role="assistant",
+            content="根据当前证据，后端入口在 app/main.py。",
+            answer_debug=AnswerDebug(
+                confirmed_facts=["已确认 app/main.py 是后端入口"],
+                evidence_gaps=["尚未定位更深层调用链"],
+            ),
+        ),
+    )
+
+    messages = await store.get_chat_messages("task-chat-debug")
+
+    assert messages[0].answer_debug is not None
+    assert messages[0].answer_debug.confirmed_facts == ["已确认 app/main.py 是后端入口"]
+    assert messages[0].answer_debug.evidence_gaps == ["尚未定位更深层调用链"]

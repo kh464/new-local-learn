@@ -12,12 +12,12 @@ const taskStateMap: Record<string, string> = {
 const stageMap: Record<TaskStage, string> = {
   fetch_repo: '拉取代码',
   scan_tree: '扫描目录',
-  detect_stack: '识别技术栈',
+  detect_stack: '识别栈',
   analyze_backend: '分析后端',
   analyze_frontend: '分析前端',
-  build_doc: '生成报告',
+  build_doc: '生成文档',
   build_knowledge: '构建知识库',
-  finalize: '完成收尾',
+  finalize: '完成',
 }
 
 const executionModeMap: Record<string, string> = {
@@ -38,7 +38,7 @@ export const orderedTaskStages: TaskStage[] = [
   'finalize',
 ]
 
-function normalizeFallback(value?: string | null, empty = '暂无'): string {
+function normalizeFallback(value?: string | null, empty = '无'): string {
   if (value === undefined || value === null) {
     return empty
   }
@@ -80,8 +80,11 @@ export function formatTaskStageZh(value?: string | null): string {
 }
 
 export function formatExecutionModeZh(value?: string | null): string {
-  const fallback = normalizeFallback(value, '计划中')
-  return value ? executionModeMap[value.trim().toLowerCase()] ?? fallback : fallback
+  if (value === undefined || value === null) {
+    return '计划中'
+  }
+  const fallback = normalizeFallback(value)
+  return executionModeMap[value.trim().toLowerCase()] ?? fallback
 }
 
 export function formatBooleanZh(value: boolean): string {

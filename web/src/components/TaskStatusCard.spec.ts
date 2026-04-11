@@ -21,7 +21,7 @@ describe('TaskStatusCard', () => {
     })
 
     expect(wrapper.text()).toContain('执行中')
-    expect(wrapper.text()).toContain('识别技术栈')
+    expect(wrapper.text()).toContain('识别栈')
     expect(wrapper.text()).toContain('35%')
   })
 })

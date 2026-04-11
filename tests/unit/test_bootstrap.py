@@ -48,6 +48,11 @@ def test_settings_and_models_bootstrap(tmp_path, monkeypatch):
     assert settings.llm_enabled is True
     assert settings.llm_config_path == Path("config/llm.yaml")
     assert settings.llm_profile is None
+    assert settings.vector_store_enabled is False
+    assert settings.vector_store_provider == "qdrant"
+    assert settings.vector_store_collection == "repo_semantic_items"
+    assert settings.vector_store_url == "http://localhost:6333"
+    assert settings.embedding_model == "text-embedding-3-small"
     assert settings.api_keys == ("alpha", "beta")
     assert settings.api_key_records == (
         "ci:ci-secret:analyze:create|tasks:read",

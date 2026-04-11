@@ -74,6 +74,11 @@ export interface PlannerMetadata {
   search_queries: string[]
 }
 
+export interface AnswerDebug {
+  confirmed_facts: string[]
+  evidence_gaps: string[]
+}
+
 export interface TaskChatMessage {
   message_id: string
   role: 'user' | 'assistant'
@@ -83,6 +88,7 @@ export interface TaskChatMessage {
   supplemental_notes: string[]
   confidence?: 'high' | 'medium' | 'low' | null
   answer_source?: 'llm' | 'local' | null
+  answer_debug?: AnswerDebug | null
   planner_metadata?: PlannerMetadata | null
   created_at: string
 }
@@ -360,6 +366,14 @@ function isPlannerMetadata(value: unknown): value is PlannerMetadata {
   )
 }
 
+function isAnswerDebug(value: unknown): value is AnswerDebug {
+  return (
+    isRecord(value) &&
+    isStringArray(value.confirmed_facts) &&
+    isStringArray(value.evidence_gaps)
+  )
+}
+
 function isTaskChatMessage(value: unknown): value is TaskChatMessage {
   return (
     isRecord(value) &&
@@ -378,6 +392,9 @@ function isTaskChatMessage(value: unknown): value is TaskChatMessage {
       value.answer_source === null ||
       value.answer_source === 'llm' ||
       value.answer_source === 'local') &&
+    (value.answer_debug === undefined ||
+      value.answer_debug === null ||
+      isAnswerDebug(value.answer_debug)) &&
     (value.planner_metadata === undefined ||
       value.planner_metadata === null ||
       isPlannerMetadata(value.planner_metadata)) &&
