@@ -79,6 +79,16 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
                             line=body_node.lineno,
                         )
                     )
+                    nested_symbols, nested_edges = self._nested_function_symbols(
+                        task_id=task_id,
+                        relative_path=relative_path,
+                        module_name=module_name,
+                        parent_node=body_node,
+                        parent_symbol_id=method_symbol.symbol_id,
+                        qualified_prefix=method_symbol.qualified_name,
+                    )
+                    symbols.extend(nested_symbols)
+                    edges.extend(nested_edges)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 function_symbol = self._function_symbol(
                     task_id=task_id,
@@ -127,6 +137,16 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
                             line=node.lineno,
                         )
                     )
+                nested_symbols, nested_edges = self._nested_function_symbols(
+                    task_id=task_id,
+                    relative_path=relative_path,
+                    module_name=module_name,
+                    parent_node=node,
+                    parent_symbol_id=function_symbol.symbol_id,
+                    qualified_prefix=function_symbol.qualified_name,
+                )
+                symbols.extend(nested_symbols)
+                edges.extend(nested_edges)
 
         imported_name_to_file = self._imported_name_to_file(tree)
         import_edges = self._import_edges(task_id=task_id, relative_path=relative_path, file_id=file_id, tree=tree)
@@ -138,7 +158,7 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
             fn_node = self._find_function_node(tree, symbol)
             if fn_node is None:
                 continue
-            for call in ast.walk(fn_node):
+            for call in self._iter_calls_excluding_nested(fn_node):
                 if not isinstance(call, ast.Call):
                     continue
                 target_symbol_id = self._resolve_call_target(
@@ -249,9 +269,12 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
         module_name: str,
         route: _RouteDef,
         line: int,
+        parent_symbol_id: str | None = None,
+        qualified_prefix: str | None = None,
     ) -> CodeSymbolNode:
         route_name = f"{route.method} {route.path}"
-        qualified_name = f"{module_name}.__route__.{route.owner}.{route.method.lower()}:{route.path}"
+        route_owner = qualified_prefix or module_name
+        qualified_name = f"{route_owner}.__route__.{route.owner}.{route.method.lower()}:{route.path}"
         return CodeSymbolNode(
             task_id=task_id,
             symbol_id=self._symbol_id(relative_path=relative_path, qualified_name=qualified_name, symbol_kind="route"),
@@ -261,6 +284,108 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
             file_path=relative_path,
             start_line=line,
             end_line=line,
+            parent_symbol_id=parent_symbol_id,
+            language=self.language,
+        )
+
+    def _nested_function_symbols(
+        self,
+        *,
+        task_id: str,
+        relative_path: str,
+        module_name: str,
+        parent_node: ast.AST,
+        parent_symbol_id: str,
+        qualified_prefix: str,
+    ) -> tuple[list[CodeSymbolNode], list[CodeEdge]]:
+        symbols: list[CodeSymbolNode] = []
+        edges: list[CodeEdge] = []
+        for node in getattr(parent_node, "body", []):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            nested_symbol = self._nested_function_symbol(
+                task_id=task_id,
+                relative_path=relative_path,
+                node=node,
+                parent_symbol_id=parent_symbol_id,
+                qualified_prefix=qualified_prefix,
+            )
+            symbols.append(nested_symbol)
+            edges.append(
+                CodeEdge(
+                    task_id=task_id,
+                    from_symbol_id=parent_symbol_id,
+                    to_symbol_id=nested_symbol.symbol_id,
+                    edge_kind="contains",
+                    source_path=relative_path,
+                    line=node.lineno,
+                )
+            )
+            for route in self._route_defs(node):
+                route_symbol = self._route_symbol(
+                    task_id=task_id,
+                    relative_path=relative_path,
+                    module_name=module_name,
+                    route=route,
+                    line=node.lineno,
+                    parent_symbol_id=parent_symbol_id,
+                    qualified_prefix=nested_symbol.qualified_name,
+                )
+                symbols.append(route_symbol)
+                edges.append(
+                    CodeEdge(
+                        task_id=task_id,
+                        from_symbol_id=parent_symbol_id,
+                        to_symbol_id=route_symbol.symbol_id,
+                        edge_kind="contains",
+                        source_path=relative_path,
+                        line=node.lineno,
+                    )
+                )
+                edges.append(
+                    CodeEdge(
+                        task_id=task_id,
+                        from_symbol_id=route_symbol.symbol_id,
+                        to_symbol_id=nested_symbol.symbol_id,
+                        edge_kind="routes_to",
+                        source_path=relative_path,
+                        line=node.lineno,
+                    )
+                )
+            descendant_symbols, descendant_edges = self._nested_function_symbols(
+                task_id=task_id,
+                relative_path=relative_path,
+                module_name=module_name,
+                parent_node=node,
+                parent_symbol_id=nested_symbol.symbol_id,
+                qualified_prefix=nested_symbol.qualified_name,
+            )
+            symbols.extend(descendant_symbols)
+            edges.extend(descendant_edges)
+        return symbols, edges
+
+    def _nested_function_symbol(
+        self,
+        *,
+        task_id: str,
+        relative_path: str,
+        node: ast.AST,
+        parent_symbol_id: str,
+        qualified_prefix: str,
+    ) -> CodeSymbolNode:
+        name = getattr(node, "name")
+        qualified_name = f"{qualified_prefix}.{name}"
+        return CodeSymbolNode(
+            task_id=task_id,
+            symbol_id=self._symbol_id(relative_path=relative_path, qualified_name=qualified_name, symbol_kind="function"),
+            symbol_kind="function",
+            name=name,
+            qualified_name=qualified_name,
+            file_path=relative_path,
+            start_line=node.lineno,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            parent_symbol_id=parent_symbol_id,
+            signature=self._signature(node),
             language=self.language,
         )
 
@@ -368,6 +493,14 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
             candidates.append(node)
         return candidates[0] if candidates else None
 
+    def _iter_calls_excluding_nested(self, node: ast.AST):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, ast.Call):
+                yield child
+            yield from self._iter_calls_excluding_nested(child)
+
     def _attribute_text(self, node: ast.Attribute) -> str:
         if isinstance(node.value, ast.Name):
             return f"{node.value.id}.{node.attr}"
@@ -421,4 +554,3 @@ class PythonCodeGraphAdapter(BaseLanguageAdapter):
             seen.add(key)
             result.append(call)
         return result
-

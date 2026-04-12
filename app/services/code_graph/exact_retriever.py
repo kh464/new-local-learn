@@ -36,6 +36,8 @@ class ExactRetriever:
             candidates.extend(self.retrieve_by_path(task_id=task_id, path=entity, limit=limit))
 
         for query in search_queries or []:
+            candidates.extend(self.retrieve_by_symbol(task_id=task_id, symbol_name=query, limit=limit))
+            candidates.extend(self.retrieve_by_path(task_id=task_id, path=query, limit=limit))
             candidates.extend(self.retrieve_by_summary_substring(task_id=task_id, term=query, limit=limit))
 
         fts_queries = self._build_fts_queries(

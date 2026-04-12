@@ -31,17 +31,25 @@ class GraphEvidenceBuilder:
         graph_nodes = [
             {
                 "kind": "file",
+                "node_id": f"file:{file.language}:{file.path}",
                 "path": file.path,
+                "language": file.language,
                 "summary_zh": file.summary_zh,
+                "entry_role": file.entry_role,
             }
             for file in subgraph.files
         ] + [
             {
                 "kind": symbol.symbol_kind,
+                "node_id": symbol.symbol_id,
                 "symbol_id": symbol.symbol_id,
+                "name": symbol.name,
                 "qualified_name": symbol.qualified_name,
                 "path": symbol.file_path,
+                "start_line": symbol.start_line,
+                "end_line": symbol.end_line,
                 "summary_zh": symbol.summary_zh,
+                "language": symbol.language,
             }
             for symbol in subgraph.symbols
         ]

@@ -128,11 +128,33 @@ class AnswerComposer:
             return text[:limit]
         return text[: limit - 3] + "..."
 
+    def _format_location(self, item) -> str:
+        if not item.path:
+            return ""
+        if item.start_line is not None:
+            return f"{item.path}:{item.start_line}"
+        return item.path
+
     def _compose_local(self, *, question: str, evidence_pack: EvidencePack) -> dict[str, object]:
         if evidence_pack.call_chains:
             chain = evidence_pack.call_chains[0]
             return {
                 "answer": f"根据当前仓库证据，最相关的调用链是：{chain.title}。",
+                "supplemental_notes": self._build_local_notes(evidence_pack, fallback_limit=2),
+                "confidence": "high" if evidence_pack.citations else "medium",
+                "answer_source": "local",
+            }
+
+        if evidence_pack.routes:
+            route = evidence_pack.routes[0]
+            location = self._format_location(route)
+            answer = (
+                f"根据当前仓库证据，{route.title} 这个路由定义在 {location}。"
+                if location
+                else f"根据当前仓库证据，已经定位到路由 {route.title}。"
+            )
+            return {
+                "answer": answer,
                 "supplemental_notes": self._build_local_notes(evidence_pack, fallback_limit=2),
                 "confidence": "high" if evidence_pack.citations else "medium",
                 "answer_source": "local",

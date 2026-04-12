@@ -4,6 +4,7 @@ from app.services.code_graph.code_locator import CodeLocator
 from app.services.code_graph.evidence_builder import GraphEvidenceBuilder
 from app.services.code_graph.graph_expander import GraphExpander
 from app.services.code_graph.models import CodeEdge, CodeFileNode, CodeSymbolNode, RetrievalCandidate
+from app.services.code_graph.pipeline import CodeGraphBuildPipeline
 from app.services.code_graph.storage import CodeGraphStore
 
 
@@ -122,3 +123,67 @@ def test_graph_expander_and_code_locator_build_local_subgraph_and_snippets(tmp_p
     assert "def health" in snippets[0].snippet or "def helper" in snippets[0].snippet
     assert evidence.graph_nodes
     assert evidence.snippets
+
+
+def test_graph_expander_bridges_unresolved_attribute_calls_into_matching_symbols(tmp_path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "app").mkdir(parents=True)
+    (repo_root / "app" / "main.py").write_text(
+        "from app.task_queue import InMemoryTaskQueue\n\n"
+        "def create_app():\n"
+        "    task_queue = InMemoryTaskQueue()\n\n"
+        "    def enqueue_turn_task():\n"
+        "        return task_queue.submit(task_type='turn', session_id='s', owner_id='o')\n\n"
+        "    return enqueue_turn_task\n",
+        encoding="utf-8",
+    )
+    (repo_root / "app" / "task_queue.py").write_text(
+        "class InMemoryTaskQueue:\n"
+        "    def submit(self, task_type, session_id, owner_id):\n"
+        "        return {'task_type': task_type, 'session_id': session_id, 'owner_id': owner_id}\n\n"
+        "    def _worker_loop(self):\n"
+        "        return self._execute()\n\n"
+        "    def _execute(self):\n"
+        "        return {'status': 'completed'}\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "knowledge.db"
+    CodeGraphBuildPipeline().build(task_id="task-unresolved", repo_root=repo_root, db_path=db_path)
+    graph_store = CodeGraphStore(db_path)
+
+    enqueue_symbol = next(
+        symbol
+        for symbol in graph_store.list_symbols(task_id="task-unresolved")
+        if symbol.qualified_name.endswith("create_app.enqueue_turn_task")
+    )
+    seeds = [
+        RetrievalCandidate(
+            task_id="task-unresolved",
+            item_id=enqueue_symbol.symbol_id,
+            item_type="symbol",
+            path=enqueue_symbol.file_path,
+            symbol_id=enqueue_symbol.symbol_id,
+            qualified_name=enqueue_symbol.qualified_name,
+            score=120.0,
+            source="exact",
+            summary_zh=enqueue_symbol.summary_zh,
+        )
+    ]
+
+    subgraph = GraphExpander(graph_store=graph_store).expand(
+        task_id="task-unresolved",
+        seeds=seeds,
+        max_hops=3,
+        max_nodes=20,
+    )
+
+    assert any(symbol.qualified_name == "app.task_queue.InMemoryTaskQueue.submit" for symbol in subgraph.symbols)
+    assert any(symbol.qualified_name == "app.task_queue.InMemoryTaskQueue._worker_loop" for symbol in subgraph.symbols)
+    assert any(file.path == "app/task_queue.py" for file in subgraph.files)
+    assert any(
+        edge.edge_kind == "calls"
+        and edge.from_symbol_id == enqueue_symbol.symbol_id
+        and edge.to_symbol_id.endswith("app.task_queue.InMemoryTaskQueue.submit")
+        for edge in subgraph.edges
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -141,3 +142,202 @@ async def test_summary_generation_service_falls_back_to_rule_summary_when_llm_mi
     assert files[0].summary_zh
     assert symbols[0].summary_source == "rule"
     assert symbols[0].summary_zh
+
+
+@pytest.mark.asyncio
+async def test_summary_generation_service_limits_llm_calls_and_falls_back_for_remaining_records(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "app").mkdir()
+    (repo_root / "app" / "main.py").write_text(
+        "def create_app():\n    return None\n",
+        encoding="utf-8",
+    )
+    (repo_root / "app" / "worker.py").write_text(
+        "def run_job():\n    return None\n",
+        encoding="utf-8",
+    )
+
+    store = CodeGraphStore(db_path)
+    store.initialize()
+    store.upsert_files(
+        [
+            CodeFileNode(
+                task_id="task-3",
+                path="app/main.py",
+                language="python",
+                file_kind="source",
+                summary_zh="",
+                entry_role="backend_entry",
+            ),
+            CodeFileNode(
+                task_id="task-3",
+                path="app/worker.py",
+                language="python",
+                file_kind="source",
+                summary_zh="",
+            ),
+        ]
+    )
+    store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-3",
+                symbol_id="route:python:app/main.py:app.main.create_app.__route__.app.get:/health",
+                symbol_kind="route",
+                name="GET /health",
+                qualified_name="app.main.create_app.__route__.app.get:/health",
+                file_path="app/main.py",
+                start_line=1,
+                end_line=1,
+                summary_zh="",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-3",
+                symbol_id="function:python:app/main.py:app.main.create_app.health",
+                symbol_kind="function",
+                name="health",
+                qualified_name="app.main.create_app.health",
+                file_path="app/main.py",
+                start_line=1,
+                end_line=2,
+                summary_zh="",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-3",
+                symbol_id="class:python:app/worker.py:app.worker.JobRunner",
+                symbol_kind="class",
+                name="JobRunner",
+                qualified_name="app.worker.JobRunner",
+                file_path="app/worker.py",
+                start_line=1,
+                end_line=2,
+                summary_zh="",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-3",
+                symbol_id="function:python:app/worker.py:app.worker.run_job",
+                symbol_kind="function",
+                name="run_job",
+                qualified_name="app.worker.run_job",
+                file_path="app/worker.py",
+                start_line=1,
+                end_line=2,
+                summary_zh="",
+                language="python",
+            ),
+        ]
+    )
+
+    calls = {"file": 0, "symbol": 0}
+
+    class StubLlmSummaryService:
+        async def generate_file_summary(self, **kwargs):
+            calls["file"] += 1
+            return SimpleNamespace(
+                summary_zh="文件 LLM 摘要",
+                responsibility_zh="LLM",
+                upstream_zh="",
+                downstream_zh="",
+                keywords_zh=["LLM"],
+                summary_confidence="high",
+            )
+
+        async def generate_symbol_summary(self, **kwargs):
+            calls["symbol"] += 1
+            return SimpleNamespace(
+                summary_zh="符号 LLM 摘要",
+                input_output_zh="LLM",
+                side_effects_zh="",
+                call_targets_zh="",
+                callers_zh="",
+                summary_confidence="high",
+            )
+
+    service = SummaryGenerationService(
+        graph_store=store,
+        llm_summary_service=StubLlmSummaryService(),
+        max_llm_file_summaries=1,
+        max_llm_symbol_summaries=2,
+    )
+    await service.build(task_id="task-3", db_path=db_path, repo_root=repo_root)
+
+    files = store.list_files(task_id="task-3")
+    symbols = store.list_symbols(task_id="task-3")
+
+    assert calls == {"file": 1, "symbol": 2}
+    assert sum(1 for item in files if item.summary_source == "llm") == 1
+    assert sum(1 for item in files if item.summary_source == "rule") == 1
+    assert sum(1 for item in symbols if item.summary_source == "llm") == 2
+    assert sum(1 for item in symbols if item.summary_source == "rule") == 2
+
+
+@pytest.mark.asyncio
+async def test_summary_generation_service_runs_llm_requests_with_parallelism(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "app").mkdir()
+    (repo_root / "app" / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (repo_root / "app" / "worker.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+
+    store = CodeGraphStore(db_path)
+    store.initialize()
+    store.upsert_files(
+        [
+            CodeFileNode(task_id="task-4", path="app/main.py", language="python", file_kind="source", summary_zh="", entry_role="backend_entry"),
+            CodeFileNode(task_id="task-4", path="app/worker.py", language="python", file_kind="source", summary_zh=""),
+        ]
+    )
+    store.upsert_symbols(
+        [
+            CodeSymbolNode(task_id="task-4", symbol_id="function:python:app/main.py:app.main.a", symbol_kind="function", name="a", qualified_name="app.main.a", file_path="app/main.py", start_line=1, end_line=2, summary_zh="", language="python"),
+            CodeSymbolNode(task_id="task-4", symbol_id="function:python:app/worker.py:app.worker.b", symbol_kind="function", name="b", qualified_name="app.worker.b", file_path="app/worker.py", start_line=1, end_line=2, summary_zh="", language="python"),
+        ]
+    )
+
+    counters = {"current": 0, "max": 0}
+
+    class StubLlmSummaryService:
+        async def generate_file_summary(self, **kwargs):
+            counters["current"] += 1
+            counters["max"] = max(counters["max"], counters["current"])
+            await asyncio.sleep(0.01)
+            counters["current"] -= 1
+            return SimpleNamespace(
+                summary_zh="文件 LLM 摘要",
+                responsibility_zh="LLM",
+                upstream_zh="",
+                downstream_zh="",
+                keywords_zh=["LLM"],
+                summary_confidence="high",
+            )
+
+        async def generate_symbol_summary(self, **kwargs):
+            counters["current"] += 1
+            counters["max"] = max(counters["max"], counters["current"])
+            await asyncio.sleep(0.01)
+            counters["current"] -= 1
+            return SimpleNamespace(
+                summary_zh="符号 LLM 摘要",
+                input_output_zh="LLM",
+                side_effects_zh="",
+                call_targets_zh="",
+                callers_zh="",
+                summary_confidence="high",
+            )
+
+    service = SummaryGenerationService(
+        graph_store=store,
+        llm_summary_service=StubLlmSummaryService(),
+        max_llm_file_summaries=2,
+        max_llm_symbol_summaries=2,
+        max_llm_parallelism=4,
+    )
+    await service.build(task_id="task-4", db_path=db_path, repo_root=repo_root)
+
+    assert counters["max"] > 1

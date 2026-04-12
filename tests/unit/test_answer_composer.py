@@ -105,3 +105,44 @@ async def test_answer_composer_local_fallback_reports_missing_evidence():
     assert "证据不足" in result["answer"]
     assert "知识库" in result["answer"]
     assert any("尚未定位到知识库入口文件" in note for note in result["supplemental_notes"])
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_local_fallback_uses_route_evidence_when_available():
+    composer = AnswerComposer()
+
+    result = await composer.compose(
+        question="GET /health 是由哪个函数处理的？请给出文件位置。",
+        evidence_pack=EvidencePack(
+            question="GET /health 是由哪个函数处理的？请给出文件位置。",
+            planning_source="hybrid_rag",
+            routes=[
+                EvidenceItem(
+                    kind="route",
+                    path="app/main.py",
+                    title="GET /health",
+                    summary="该路由定义在 app/main.py:274，并指向处理函数 app.main.create_app.health。",
+                    start_line=274,
+                    end_line=274,
+                )
+            ],
+            citations=[
+                EvidenceItem(
+                    kind="citation",
+                    path="app/main.py",
+                    title="app.main.create_app.health",
+                    summary="app.main.create_app.health",
+                    start_line=275,
+                    end_line=278,
+                    snippet="    @app.get('/health')\n    async def health():\n        return {'status': 'ok'}",
+                )
+            ],
+            key_findings=["已确认 GET /health 在 app/main.py:274 定义，并由 app.main.create_app.health 处理。"],
+        ),
+        history=[],
+    )
+
+    assert result["answer_source"] == "local"
+    assert "GET /health" in result["answer"]
+    assert "app/main.py" in result["answer"]
+    assert "app.main.create_app.health" in "".join(result["supplemental_notes"])

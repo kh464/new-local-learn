@@ -122,6 +122,55 @@ def test_exact_retriever_can_match_chinese_summary_queries(tmp_path):
     assert hits[0].source == "exact"
 
 
+def test_exact_retriever_uses_search_queries_for_direct_symbol_and_path_matches(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_files(
+        [
+            CodeFileNode(
+                task_id="task-1",
+                path="app/tasks/jobs.py",
+                language="python",
+                file_kind="source",
+                summary_zh="该文件负责后台任务执行流程。",
+                entry_role=None,
+            )
+        ]
+    )
+    graph_store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="function:python:app/tasks/jobs.py:app.tasks.jobs.run_analysis_job",
+                symbol_kind="function",
+                name="run_analysis_job",
+                qualified_name="app.tasks.jobs.run_analysis_job",
+                file_path="app/tasks/jobs.py",
+                start_line=1,
+                end_line=20,
+                summary_zh="该函数负责执行分析任务主流程。",
+                language="python",
+            )
+        ]
+    )
+
+    retriever = ExactRetriever(graph_store=graph_store, chunk_retriever=_FakeChunkRetriever())
+    hits = retriever.retrieve(
+        task_id="task-1",
+        db_path=db_path,
+        question="用户提交分析任务后后端会经过哪些步骤",
+        normalized_question="说明分析任务后端执行流程",
+        target_entities=[],
+        search_queries=["run_analysis_job", "app/tasks/jobs.py"],
+        limit=5,
+    )
+
+    assert hits
+    assert any(hit.qualified_name == "app.tasks.jobs.run_analysis_job" for hit in hits)
+    assert any(hit.path == "app/tasks/jobs.py" for hit in hits)
+
+
 @pytest.mark.asyncio
 async def test_semantic_retriever_returns_candidates_from_vector_hits():
     retriever = SemanticRetriever(
@@ -179,3 +228,150 @@ def test_hybrid_ranker_merges_exact_and_semantic_hits():
     assert len(merged) == 1
     assert merged[0].qualified_name == "app.main.health"
     assert merged[0].score > 120.0
+
+
+def test_hybrid_ranker_prioritizes_execution_symbols_for_architecture_questions():
+    ranker = HybridRanker()
+    merged = ranker.rank(
+        exact_hits=[
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="function:python:app/main.py:app.main.create_app.enqueue_turn_task",
+                item_type="symbol",
+                path="app/main.py",
+                symbol_id="function:python:app/main.py:app.main.create_app.enqueue_turn_task",
+                qualified_name="app.main.create_app.enqueue_turn_task",
+                score=130.0,
+                source="exact",
+                summary_zh="提交任务入口函数。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                item_type="symbol",
+                path="app/task_queue.py",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                qualified_name="app.task_queue.InMemoryTaskQueue.submit",
+                score=130.0,
+                source="exact",
+                summary_zh="任务入队方法。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="class:python:app/api/schemas.py:app.api.schemas.TurnTaskRequest",
+                item_type="symbol",
+                path="app/api/schemas.py",
+                symbol_id="class:python:app/api/schemas.py:app.api.schemas.TurnTaskRequest",
+                qualified_name="app.api.schemas.TurnTaskRequest",
+                score=130.0,
+                source="exact",
+                summary_zh="任务提交请求结构。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="class:python:app/config.py:app.config.TaskQueueSettings",
+                item_type="symbol",
+                path="app/config.py",
+                symbol_id="class:python:app/config.py:app.config.TaskQueueSettings",
+                qualified_name="app.config.TaskQueueSettings",
+                score=130.0,
+                source="exact",
+                summary_zh="任务队列配置。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="function:python:alembic/versions/20260407_000002_create_task_queue_table.py:alembic.versions.20260407_000002_create_task_queue_table.upgrade",
+                item_type="symbol",
+                path="alembic/versions/20260407_000002_create_task_queue_table.py",
+                symbol_id="function:python:alembic/versions/20260407_000002_create_task_queue_table.py:alembic.versions.20260407_000002_create_task_queue_table.upgrade",
+                qualified_name="alembic.versions.20260407_000002_create_task_queue_table.upgrade",
+                score=130.0,
+                source="exact",
+                summary_zh="迁移创建任务队列表。",
+            ),
+        ],
+        semantic_hits=[],
+        question_type="architecture_explanation",
+        search_queries=["task_queue.py", "enqueue", "submit"],
+        limit=5,
+    )
+
+    qualified_names = [item.qualified_name for item in merged if item.qualified_name]
+    assert set(qualified_names[:2]) == {
+        "app.main.create_app.enqueue_turn_task",
+        "app.task_queue.InMemoryTaskQueue.submit",
+    }
+
+
+def test_hybrid_ranker_does_not_overboost_generic_methods_from_task_queue_file():
+    ranker = HybridRanker()
+    merged = ranker.rank(
+        exact_hits=[
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="function:python:app/main.py:app.main.create_app.enqueue_turn_task",
+                item_type="symbol",
+                path="app/main.py",
+                symbol_id="function:python:app/main.py:app.main.create_app.enqueue_turn_task",
+                qualified_name="app.main.create_app.enqueue_turn_task",
+                score=130.0,
+                source="exact",
+                summary_zh="提交任务入口函数。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                item_type="symbol",
+                path="app/task_queue.py",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                qualified_name="app.task_queue.InMemoryTaskQueue.submit",
+                score=130.0,
+                source="exact",
+                summary_zh="任务入队方法。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue._worker_loop",
+                item_type="symbol",
+                path="app/task_queue.py",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue._worker_loop",
+                qualified_name="app.task_queue.InMemoryTaskQueue._worker_loop",
+                score=130.0,
+                source="exact",
+                summary_zh="任务工作循环。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.__init__",
+                item_type="symbol",
+                path="app/task_queue.py",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.__init__",
+                qualified_name="app.task_queue.InMemoryTaskQueue.__init__",
+                score=130.0,
+                source="exact",
+                summary_zh="初始化方法。",
+            ),
+            RetrievalCandidate(
+                task_id="task-1",
+                item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue._emit",
+                item_type="symbol",
+                path="app/task_queue.py",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue._emit",
+                qualified_name="app.task_queue.InMemoryTaskQueue._emit",
+                score=130.0,
+                source="exact",
+                summary_zh="发送更新。",
+            ),
+        ],
+        semantic_hits=[],
+        question_type="architecture_explanation",
+        search_queries=["task_queue.py", "enqueue", "submit", "_worker_loop"],
+        limit=5,
+    )
+
+    qualified_names = [item.qualified_name for item in merged if item.qualified_name]
+    assert qualified_names[0] == "app.main.create_app.enqueue_turn_task"
+    assert set(qualified_names[1:3]) == {
+        "app.task_queue.InMemoryTaskQueue._worker_loop",
+        "app.task_queue.InMemoryTaskQueue.submit",
+    }

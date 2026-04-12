@@ -1,11 +1,58 @@
 from __future__ import annotations
 
 import inspect
+import re
 from typing import Any
 
 from app.core.chat_models import PlannerMetadata
 from app.core.models import AnswerDebug, TaskChatCitation, TaskChatResponse, TaskGraphEvidence
 from app.services.chat.models import AgentObservation, EvidenceItem, EvidencePack, PlannerResult
+
+_ROUTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.{}:-]+)*")
+_SYMBOL_PATTERN = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b")
+_ENGLISH_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_./-]{1,}")
+_CHINESE_PHRASE_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}")
+_FOLLOWUP_MARKERS = (
+    "继续",
+    "展开",
+    "细说",
+    "详细说",
+    "再讲",
+    "接着",
+    "上一问",
+    "前面说的",
+    "刚才说的",
+    "上面提到的",
+    "那它",
+    "它的",
+    "该函数",
+    "该接口",
+    "该路由",
+    "这个函数",
+    "这个接口",
+    "这个路由",
+)
+_TOPIC_STOPWORDS = (
+    "请",
+    "请问",
+    "帮我",
+    "一下",
+    "这个项目",
+    "该项目",
+    "项目",
+    "仓库",
+    "代码",
+    "是否",
+    "是不是",
+    "实现",
+    "请只基于代码证据回答",
+    "只基于代码证据回答",
+    "基于代码证据回答",
+    "回答",
+    "说明",
+    "分析",
+    "一下",
+)
 
 
 class TaskChatOrchestrator:
@@ -67,7 +114,8 @@ class TaskChatOrchestrator:
         used_tools: list[str] = []
         planning_source = "llm"
         fallback_used = False
-        history_payload = [{"role": item.role, "content": item.content} for item in history]
+        scoped_history = self._scope_history_for_question(question=question, history=history)
+        history_payload = [{"role": item.role, "content": item.content} for item in scoped_history]
         available_tools = await self._list_available_tools()
 
         last_plan = None
@@ -120,7 +168,7 @@ class TaskChatOrchestrator:
             observations=observations,
         )
 
-        draft = await self._compose_answer(question=question, evidence_pack=evidence_pack, history=history)
+        draft = await self._compose_answer(question=question, evidence_pack=evidence_pack, history=scoped_history)
         validation = await self._validate_answer(
             question=question,
             answer=draft["answer"],
@@ -146,6 +194,10 @@ class TaskChatOrchestrator:
                 used_tools=used_tools,
                 fallback_used=fallback_used,
                 search_queries=list(getattr(last_plan, "search_queries", []) or []),
+                question_type=str(getattr(last_plan, "question_type", "") or "") or None,
+                retrieval_objective=str(getattr(last_plan, "retrieval_objective", "") or "") or None,
+                must_include_entities=list(getattr(last_plan, "must_include_entities", []) or []),
+                preferred_evidence_kinds=list(getattr(last_plan, "preferred_evidence_kinds", []) or []),
             ),
         )
 
@@ -170,7 +222,8 @@ class TaskChatOrchestrator:
         question: str,
         history: list,
     ) -> TaskChatResponse:
-        history_payload = [{"role": item.role, "content": item.content} for item in history]
+        scoped_history = self._scope_history_for_question(question=question, history=history)
+        history_payload = [{"role": item.role, "content": item.content} for item in scoped_history]
         analysis = await self._maybe_await(
             self._question_analyzer.analyze(question=question, history=history_payload)
         )
@@ -197,12 +250,15 @@ class TaskChatOrchestrator:
         ranked_hits = self._hybrid_ranker.rank(
             exact_hits=exact_hits,
             semantic_hits=semantic_hits,
+            question_type=analysis.question_type,
+            search_queries=list(analysis.search_queries),
             limit=8,
         )
+        max_hops = 3 if analysis.question_type == "architecture_explanation" else 2
         subgraph = self._graph_expander.expand(
             task_id=task_id,
             seeds=ranked_hits,
-            max_hops=2,
+            max_hops=max_hops,
             max_nodes=20,
         )
         snippets = self._code_locator.locate(subgraph=subgraph)
@@ -214,7 +270,7 @@ class TaskChatOrchestrator:
             snippets=snippets,
         )
         chat_evidence_pack = self._convert_graph_evidence(graph_evidence_pack)
-        draft = await self._compose_answer(question=question, evidence_pack=chat_evidence_pack, history=history)
+        draft = await self._compose_answer(question=question, evidence_pack=chat_evidence_pack, history=scoped_history)
         validation = await self._validate_answer(
             question=question,
             answer=draft["answer"],
@@ -244,30 +300,77 @@ class TaskChatOrchestrator:
                 used_tools=used_tools,
                 fallback_used=False,
                 search_queries=list(analysis.search_queries),
+                question_type=analysis.question_type,
+                retrieval_objective=analysis.retrieval_objective,
+                must_include_entities=list(getattr(analysis, "must_include_entities", []) or []),
+                preferred_evidence_kinds=list(getattr(analysis, "preferred_evidence_kinds", []) or []),
             ),
         )
 
     def _convert_graph_evidence(self, graph_pack) -> EvidencePack:
+        node_items_by_id: dict[str, EvidenceItem] = {}
+        node_meta_by_id: dict[str, dict[str, object]] = {}
+        seed_ids = {str(seed.symbol_id) for seed in list(getattr(graph_pack, "seeds", []) or []) if getattr(seed, "symbol_id", None)}
+        seed_paths = {str(seed.path) for seed in list(getattr(graph_pack, "seeds", []) or []) if getattr(seed, "path", None)}
+        question_text = " ".join(
+            part.strip()
+            for part in (
+                str(getattr(graph_pack, "question", "") or ""),
+                str(getattr(graph_pack, "normalized_question", "") or ""),
+                str(getattr(graph_pack, "retrieval_objective", "") or ""),
+            )
+            if part and str(part).strip()
+        )
+        entrypoints: list[EvidenceItem] = []
         files = [
             EvidenceItem(
                 kind="file",
                 path=str(node.get("path") or ""),
                 title=str(node.get("path") or node.get("kind") or ""),
                 summary=str(node.get("summary_zh") or ""),
+                start_line=self._coerce_int(node.get("start_line")),
+                end_line=self._coerce_int(node.get("end_line")),
             )
             for node in graph_pack.graph_nodes
             if node.get("kind") == "file"
         ]
-        symbols = [
-            EvidenceItem(
-                kind="symbol",
+        routes: list[EvidenceItem] = []
+        symbols: list[EvidenceItem] = []
+        for node in graph_pack.graph_nodes:
+            kind = str(node.get("kind") or "")
+            node_id = self._infer_graph_node_id(node)
+            item = EvidenceItem(
+                kind="route" if kind == "route" else ("file" if kind == "file" else "symbol"),
                 path=str(node.get("path") or ""),
-                title=str(node.get("qualified_name") or node.get("kind") or ""),
+                title=self._resolve_graph_item_title(kind=kind, node=node),
                 summary=str(node.get("summary_zh") or ""),
+                start_line=self._coerce_int(node.get("start_line")),
+                end_line=self._coerce_int(node.get("end_line")),
             )
-            for node in graph_pack.graph_nodes
-            if node.get("kind") != "file"
-        ]
+            if kind == "file":
+                if node.get("entry_role"):
+                    entrypoints.append(
+                        EvidenceItem(
+                            kind="entrypoint",
+                            path=item.path,
+                            title=item.title,
+                            summary=item.summary,
+                            start_line=item.start_line,
+                            end_line=item.end_line,
+                        )
+                    )
+                if node_id:
+                    node_items_by_id[node_id] = item
+                    node_meta_by_id[node_id] = node
+                continue
+            if kind == "route":
+                routes.append(item)
+            else:
+                symbols.append(item)
+            if node_id:
+                node_items_by_id[node_id] = item
+                node_meta_by_id[node_id] = node
+
         citations = [
             EvidenceItem(
                 kind="citation",
@@ -280,14 +383,373 @@ class TaskChatOrchestrator:
             )
             for item in graph_pack.snippets
         ]
+        call_chains = self._build_call_chain_evidence(
+            graph_edges=list(getattr(graph_pack, "graph_edges", []) or []),
+            node_items_by_id=node_items_by_id,
+            seed_ids=seed_ids,
+            seed_paths=seed_paths,
+            question_text=question_text,
+        )
+        key_findings = self._merge_unique_strings(
+            self._build_graph_key_findings(
+                graph_edges=list(getattr(graph_pack, "graph_edges", []) or []),
+                node_items_by_id=node_items_by_id,
+                node_meta_by_id=node_meta_by_id,
+                entrypoints=entrypoints,
+                routes=routes,
+                seed_ids=seed_ids,
+                seed_paths=seed_paths,
+                question_text=question_text,
+            ),
+            list(graph_pack.summaries),
+        )
+        confidence_basis = []
+        if call_chains:
+            confidence_basis.append("已命中 route 节点及 routes_to 关系，可直接确认路由到处理函数的映射。")
+        if citations:
+            confidence_basis.append("已命中真实代码片段，可用于确认文件位置和函数定义。")
         return EvidencePack(
             question=graph_pack.question,
             planning_source="hybrid_rag",
+            entrypoints=entrypoints,
+            call_chains=call_chains,
+            routes=routes,
             files=files,
             symbols=symbols,
             citations=citations,
-            key_findings=list(graph_pack.summaries),
+            key_findings=key_findings,
+            reasoning_steps=self._build_reasoning_steps(call_chains=call_chains, routes=routes, citations=citations),
+            confidence_basis=confidence_basis,
         )
+
+    def _build_call_chain_evidence(
+        self,
+        *,
+        graph_edges: list[dict[str, object]],
+        node_items_by_id: dict[str, EvidenceItem],
+        seed_ids: set[str],
+        seed_paths: set[str],
+        question_text: str,
+    ) -> list[EvidenceItem]:
+        ranked_call_chains: list[tuple[int, EvidenceItem]] = []
+        for edge in graph_edges:
+            edge_kind = str(edge.get("kind") or "")
+            if edge_kind not in {"routes_to", "calls"}:
+                continue
+            route_id = str(edge.get("from") or "")
+            target_id = str(edge.get("to") or "")
+            route_item = node_items_by_id.get(route_id)
+            target_item = node_items_by_id.get(target_id)
+            if route_item is None or target_item is None:
+                continue
+            relevance = self._graph_edge_relevance(
+                edge_kind=edge_kind,
+                source_id=route_id,
+                target_id=target_id,
+                source_item=route_item,
+                target_item=target_item,
+                seed_ids=seed_ids,
+                seed_paths=seed_paths,
+                question_text=question_text,
+            )
+            if edge_kind == "calls" and relevance < 3:
+                continue
+            route_location = self._format_item_location(route_item)
+            target_location = self._format_item_location(target_item)
+            if edge_kind == "routes_to":
+                summary_parts = [f"路由 {route_item.title}"]
+                if route_location:
+                    summary_parts.append(f"定义在 {route_location}")
+                summary_parts.append(f"并指向处理函数 {target_item.title}")
+                if target_location and target_location != route_location:
+                    summary_parts.append(f"（位于 {target_location}）")
+            else:
+                summary_parts = [f"函数 {route_item.title}"]
+                if route_location:
+                    summary_parts.append(f"位于 {route_location}")
+                summary_parts.append(f"调用 {target_item.title}")
+                if target_location and target_location != route_location:
+                    summary_parts.append(f"（位于 {target_location}）")
+            item = EvidenceItem(
+                    kind="call_chain",
+                    path=target_item.path or route_item.path,
+                    title=f"{route_item.title} -> {target_item.title}",
+                    summary="，".join(summary_parts) + "。",
+                    start_line=target_item.start_line or route_item.start_line,
+                    end_line=target_item.end_line or route_item.end_line,
+                )
+            ranked_call_chains.append(
+                (
+                    relevance,
+                    item,
+                )
+            )
+        ranked_call_chains.sort(key=lambda pair: (-pair[0], pair[1].title))
+        return [item for _, item in ranked_call_chains]
+
+    def _build_graph_key_findings(
+        self,
+        *,
+        graph_edges: list[dict[str, object]],
+        node_items_by_id: dict[str, EvidenceItem],
+        node_meta_by_id: dict[str, dict[str, object]],
+        entrypoints: list[EvidenceItem],
+        routes: list[EvidenceItem],
+        seed_ids: set[str],
+        seed_paths: set[str],
+        question_text: str,
+    ) -> list[str]:
+        findings: list[str] = []
+        ranked_route_findings: list[tuple[int, list[str]]] = []
+        route_ids_with_handler: set[str] = set()
+        for edge in graph_edges:
+            edge_kind = str(edge.get("kind") or "")
+            if edge_kind not in {"routes_to", "calls"}:
+                continue
+            route_id = str(edge.get("from") or "")
+            target_id = str(edge.get("to") or "")
+            route_item = node_items_by_id.get(route_id)
+            target_item = node_items_by_id.get(target_id)
+            if route_item is None or target_item is None:
+                continue
+            relevance = self._graph_edge_relevance(
+                edge_kind=edge_kind,
+                source_id=route_id,
+                target_id=target_id,
+                source_item=route_item,
+                target_item=target_item,
+                seed_ids=seed_ids,
+                seed_paths=seed_paths,
+                question_text=question_text,
+            )
+            if edge_kind == "calls" and relevance < 3:
+                continue
+            target_location = self._format_item_location(target_item)
+            items = []
+            if edge_kind == "routes_to":
+                route_ids_with_handler.add(route_id)
+                if target_location:
+                    items.append(f"已确认 {route_item.title} 由 {target_item.title} 处理，函数位置在 {target_location}。")
+                else:
+                    items.append(f"已确认 {route_item.title} 由 {target_item.title} 处理。")
+                route_meta = node_meta_by_id.get(route_id, {})
+                owner = str(route_meta.get("qualified_name") or "").strip()
+                if owner:
+                    items.append(f"对应路由节点为 {owner}。")
+                scope_finding = self._build_scope_key_finding(target_item.title)
+                if scope_finding:
+                    items.append(scope_finding)
+            else:
+                if target_location:
+                    items.append(f"已确认 {route_item.title} 调用 {target_item.title}，目标位置在 {target_location}。")
+                else:
+                    items.append(f"已确认 {route_item.title} 调用 {target_item.title}。")
+            ranked_route_findings.append(
+                (
+                    relevance,
+                    items,
+                )
+            )
+        ranked_route_findings.sort(key=lambda pair: -pair[0])
+        for _, items in ranked_route_findings:
+            findings.extend(items)
+        for item in entrypoints:
+            findings.append(f"已确认 {item.path} 是仓库入口文件。")
+        for route in routes:
+            location = self._format_item_location(route)
+            if location:
+                message = f"已确认路由 {route.title} 定义在 {location}。"
+            else:
+                message = f"已确认存在路由 {route.title}。"
+            route_id = next(
+                (
+                    node_id
+                    for node_id, node in node_items_by_id.items()
+                    if node.kind == "route" and node.title == route.title and node.path == route.path
+                ),
+                "",
+            )
+            if route_id in route_ids_with_handler:
+                continue
+            findings.append(message)
+        return findings
+
+    def _build_reasoning_steps(
+        self,
+        *,
+        call_chains: list[EvidenceItem],
+        routes: list[EvidenceItem],
+        citations: list[EvidenceItem],
+    ) -> list[str]:
+        steps: list[str] = []
+        if routes:
+            steps.append("先根据检索结果命中了 route 节点。")
+        if call_chains:
+            steps.append("再依据 routes_to 图边将路由节点映射到具体处理函数。")
+        if citations:
+            steps.append("最后结合真实代码片段确认文件位置与函数定义。")
+        return steps
+
+    def _merge_unique_strings(self, *groups: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for group in groups:
+            for item in group:
+                text = str(item or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                result.append(text)
+        return result
+
+    def _format_item_location(self, item: EvidenceItem) -> str:
+        path = item.path.strip()
+        if not path:
+            return ""
+        if item.start_line is not None:
+            return f"{path}:{item.start_line}"
+        return path
+
+    def _coerce_int(self, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return None
+
+    def _infer_graph_node_id(self, node: dict[str, object]) -> str:
+        explicit = str(node.get("node_id") or node.get("symbol_id") or "").strip()
+        if explicit:
+            return explicit
+        kind = str(node.get("kind") or "").strip()
+        path = str(node.get("path") or "").strip()
+        language = str(node.get("language") or self._infer_language_from_path(path) or "python").strip()
+        if kind == "file" and path:
+            return f"file:{language}:{path}"
+        qualified_name = str(node.get("qualified_name") or "").strip()
+        if kind and path and qualified_name:
+            return f"{kind}:{language}:{path}:{qualified_name}"
+        return ""
+
+    def _infer_language_from_path(self, path: str) -> str:
+        if path.endswith(".py"):
+            return "python"
+        if path.endswith(".java"):
+            return "java"
+        if path.endswith(".cpp") or path.endswith(".cc") or path.endswith(".cxx"):
+            return "cpp"
+        if path.endswith(".c"):
+            return "c"
+        return ""
+
+    def _resolve_graph_item_title(self, *, kind: str, node: dict[str, object]) -> str:
+        if kind == "file":
+            return str(node.get("path") or node.get("kind") or "")
+        if kind == "route":
+            return str(node.get("name") or node.get("qualified_name") or node.get("path") or "")
+        return str(node.get("qualified_name") or node.get("name") or node.get("path") or node.get("kind") or "")
+
+    def _graph_edge_relevance(
+        self,
+        *,
+        edge_kind: str,
+        source_id: str,
+        target_id: str,
+        source_item: EvidenceItem,
+        target_item: EvidenceItem,
+        seed_ids: set[str],
+        seed_paths: set[str],
+        question_text: str,
+    ) -> int:
+        question_score = self._question_match_score(question_text=question_text, source_item=source_item, target_item=target_item)
+        if question_score:
+            return 4 + question_score
+        if edge_kind == "calls":
+            if source_id in seed_ids:
+                return 3
+            if target_id in seed_ids:
+                return 2
+            if source_item.path in seed_paths or target_item.path in seed_paths:
+                return 1
+            return 0
+        if source_id in seed_ids or target_id in seed_ids:
+            return 3
+        if source_item.path in seed_paths or target_item.path in seed_paths:
+            return 2
+        return 1
+
+    def _scope_history_for_question(self, *, question: str, history: list) -> list:
+        if not history:
+            return []
+        recent_history = list(history[-4:])
+        question_tokens = self._extract_topic_tokens(question)
+        history_tokens = self._extract_history_tokens(recent_history)
+        if question_tokens and question_tokens.intersection(history_tokens):
+            return recent_history
+        if self._looks_like_followup(question=question, question_tokens=question_tokens):
+            return recent_history
+        return []
+
+    def _extract_history_tokens(self, history: list) -> set[str]:
+        tokens: set[str] = set()
+        for item in history:
+            tokens.update(self._extract_topic_tokens(getattr(item, "content", "") or ""))
+        return tokens
+
+    def _extract_topic_tokens(self, text: str) -> set[str]:
+        tokens: set[str] = set()
+        for pattern in (_ROUTE_PATH_PATTERN, _SYMBOL_PATTERN, _ENGLISH_TOKEN_PATTERN):
+            for match in pattern.finditer(text):
+                value = match.group(0).strip().lower()
+                if len(value) >= 2:
+                    tokens.add(value)
+        for phrase in _CHINESE_PHRASE_PATTERN.findall(text):
+            cleaned = phrase
+            for stopword in _TOPIC_STOPWORDS:
+                cleaned = cleaned.replace(stopword, " ")
+            cleaned = re.sub(r"\s+", " ", cleaned).strip().replace(" ", "")
+            if len(cleaned) >= 2:
+                tokens.add(cleaned.lower())
+        return tokens
+
+    def _looks_like_followup(self, *, question: str, question_tokens: set[str]) -> bool:
+        if any(marker in question for marker in _FOLLOWUP_MARKERS):
+            return True
+        if any(token in {"它", "它的", "其", "这个函数", "这个接口", "这个路由"} for token in question_tokens):
+            return True
+        return False
+
+    def _question_match_score(self, *, question_text: str, source_item: EvidenceItem, target_item: EvidenceItem) -> int:
+        normalized = question_text.lower()
+        if not normalized:
+            return 0
+        candidates = [source_item.title, target_item.title]
+        route_path = self._extract_route_path(source_item.title)
+        if route_path:
+            candidates.append(route_path)
+        for candidate in candidates:
+            text = candidate.lower().strip()
+            if text and text in normalized:
+                return 2
+        target_leaf = target_item.title.split(".")[-1].lower().strip()
+        if target_leaf and target_leaf in normalized:
+            return 1
+        return 0
+
+    def _extract_route_path(self, title: str) -> str:
+        if " " not in title:
+            return ""
+        return title.split(" ", 1)[1].strip()
+
+    def _build_scope_key_finding(self, qualified_name: str) -> str:
+        parts = [part.strip() for part in qualified_name.split(".") if part.strip()]
+        if len(parts) < 4:
+            return ""
+        parent_scope = parts[-2]
+        symbol_name = parts[-1]
+        if not parent_scope or not symbol_name:
+            return ""
+        return f"在当前代码图谱命名中，{qualified_name} 表示 {symbol_name} 属于 {parent_scope} 的内部符号作用域。"
 
     async def _list_available_tools(self) -> list[str]:
         if self._mcp_gateway is None:

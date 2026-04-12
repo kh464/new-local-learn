@@ -199,6 +199,40 @@ class CodeGraphStore:
                 ],
             )
 
+    def list_unresolved_calls(
+        self,
+        *,
+        task_id: str,
+        caller_symbol_id: str | None = None,
+        source_path: str | None = None,
+    ) -> list[UnresolvedCall]:
+        sql = """
+            SELECT task_id, caller_symbol_id, callee_name, source_path, line, raw_expr
+            FROM code_unresolved_call
+            WHERE task_id = ?
+        """
+        params: list[object] = [task_id]
+        if caller_symbol_id is not None:
+            sql += " AND caller_symbol_id = ?"
+            params.append(caller_symbol_id)
+        if source_path is not None:
+            sql += " AND source_path = ?"
+            params.append(source_path)
+        sql += " ORDER BY source_path, line, id"
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [
+            UnresolvedCall(
+                task_id=str(row["task_id"]),
+                caller_symbol_id=str(row["caller_symbol_id"]),
+                callee_name=str(row["callee_name"]),
+                source_path=str(row["source_path"]),
+                line=int(row["line"]) if row["line"] is not None else None,
+                raw_expr=str(row["raw_expr"]) if row["raw_expr"] is not None else None,
+            )
+            for row in rows
+        ]
+
     def update_file_summary(self, *, task_id: str, path: str, summary_zh: str) -> None:
         with self._connect() as connection:
             connection.execute(

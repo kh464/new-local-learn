@@ -106,8 +106,10 @@ docker compose up -d redis
 Start the API:
 
 ```powershell
-uvicorn app.main:app --reload
+python -m app.devserver
 ```
+
+This development entrypoint watches `app/`, `tests/`, and `config/`, and excludes runtime output such as `artifacts/` so cloned repositories and generated reports do not trigger a backend reload mid-task.
 
 Start the worker in a second terminal:
 

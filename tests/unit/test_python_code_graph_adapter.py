@@ -56,3 +56,41 @@ def test_python_code_graph_adapter_extracts_symbols_edges_and_routes(tmp_path):
     assert any(edge.edge_kind == "imports" for edge in result.edges)
     assert any(call.callee_name == "generate_report" for call in result.unresolved_calls)
 
+
+def test_python_code_graph_adapter_extracts_nested_route_handlers_inside_factory_function(tmp_path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "app").mkdir(parents=True)
+    file_path = repo_root / "app" / "main.py"
+    file_path.write_text(
+        "from fastapi import FastAPI\n\n"
+        "def create_app():\n"
+        "    app = FastAPI()\n\n"
+        "    @app.get('/health')\n"
+        "    def health():\n"
+        "        return {'status': 'ok'}\n\n"
+        "    return app\n",
+        encoding="utf-8",
+    )
+
+    result = PythonCodeGraphAdapter().extract_file(
+        task_id="task-1",
+        repo_root=repo_root,
+        file_path=file_path,
+    )
+
+    symbols_by_name = {symbol.qualified_name: symbol for symbol in result.symbols}
+    assert "app.main.create_app" in symbols_by_name
+    assert "app.main.create_app.health" in symbols_by_name
+    assert any(symbol.symbol_kind == "route" and symbol.name == "GET /health" for symbol in result.symbols)
+
+    create_app_id = symbols_by_name["app.main.create_app"].symbol_id
+    health_id = symbols_by_name["app.main.create_app.health"].symbol_id
+    route_id = next(
+        symbol.symbol_id
+        for symbol in result.symbols
+        if symbol.symbol_kind == "route" and symbol.name == "GET /health"
+    )
+    edge_pairs = {(edge.edge_kind, edge.from_symbol_id, edge.to_symbol_id) for edge in result.edges}
+
+    assert ("contains", create_app_id, health_id) in edge_pairs
+    assert ("routes_to", route_id, health_id) in edge_pairs
