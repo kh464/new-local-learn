@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from arq.connections import RedisSettings, create_pool
 
+from app.api.routes.graph import router as graph_router
 from app.api.routes.tasks import router as tasks_router
 from app.core.config import Settings
 from app.core.security import require_api_key_scopes
@@ -210,6 +211,7 @@ def create_app(task_store: RedisTaskStore | None = None) -> FastAPI:
         return await store.get_audit_events(limit=bounded_limit, offset=bounded_offset, filters=filters)
 
     app.include_router(tasks_router, prefix="/api/v1")
+    app.include_router(graph_router, prefix="/api/v1")
     return app
 
 

@@ -7,6 +7,11 @@ import type { PlannerMetadata, TaskChatMessage, TaskGraphEvidence, TaskStatus } 
 const props = defineProps<{
   taskId: string
   status?: TaskStatus | null
+  selectedNodeIds?: string[]
+}>()
+
+const emit = defineEmits<{
+  (event: 'highlight-related-nodes', nodeIds: string[]): void
 }>()
 
 const messages = ref<TaskChatMessage[]>([])
@@ -21,6 +26,9 @@ const knowledgeError = computed(() => props.status?.knowledge_error ?? '')
 const isKnowledgeReady = computed(() => knowledgeState.value === 'ready')
 const isKnowledgeBuilding = computed(() => knowledgeState.value === 'running' || props.status?.stage === 'build_knowledge')
 const isKnowledgeFailed = computed(() => knowledgeState.value === 'failed')
+const selectedNodeIdSet = computed(() => new Set(props.selectedNodeIds ?? []))
+const selectedNodeLabels = computed(() => props.selectedNodeIds ?? [])
+
 const emptyStatusText = computed(() => {
   if (isKnowledgeBuilding.value) {
     return '知识库构建中，完成后即可继续针对代码提问。'
@@ -33,6 +41,7 @@ const emptyStatusText = computed(() => {
   }
   return '知识库尚未就绪，请稍后再试。'
 })
+
 const canSubmit = computed(() => isKnowledgeReady.value && !sending.value && question.value.trim().length > 0)
 
 type CallChainStep = {
@@ -108,7 +117,10 @@ function hasPlannerDebug(message: TaskChatMessage): boolean {
       message.planner_metadata?.must_include_entities?.length ||
       message.planner_metadata?.preferred_evidence_kinds?.length ||
       message.answer_debug?.confirmed_facts?.length ||
-      message.answer_debug?.evidence_gaps?.length,
+      message.answer_debug?.evidence_gaps?.length ||
+      message.answer_debug?.validation_issues?.length ||
+      message.answer_debug?.retry_attempted ||
+      (message.answer_debug?.answer_attempts ?? 1) > 1,
   )
 }
 
@@ -118,6 +130,7 @@ function buildPlannerSections(metadata?: PlannerMetadata | null): PlannerDebugSe
   }
 
   const sections: PlannerDebugSection[] = []
+
   if (metadata.question_type) {
     sections.push({
       title: '问题类型',
@@ -142,6 +155,7 @@ function buildPlannerSections(metadata?: PlannerMetadata | null): PlannerDebugSe
       values: metadata.preferred_evidence_kinds,
     })
   }
+
   return sections
 }
 
@@ -270,21 +284,43 @@ function isStepSelected(messageId: string, step: CallChainStep, fallbackPath?: s
   return activePaths.every((path, index) => path === stepPaths[index])
 }
 
+function resolveMessageRelatedNodeIds(message?: TaskChatMessage | null): string[] {
+  return Array.from(new Set(message?.answer_debug?.related_node_ids ?? []))
+}
+
+function isMessageLinked(message: TaskChatMessage): boolean {
+  if (message.role !== 'assistant' || selectedNodeIdSet.value.size === 0) {
+    return false
+  }
+  return resolveMessageRelatedNodeIds(message).some((nodeId) => selectedNodeIdSet.value.has(nodeId))
+}
+
+const linkedAnswerCount = computed(() => messages.value.filter((message) => isMessageLinked(message)).length)
+
+function syncHighlightedNodes() {
+  const latestAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  emit('highlight-related-nodes', resolveMessageRelatedNodeIds(latestAssistant))
+}
+
 async function loadMessages() {
   if (!isKnowledgeReady.value) {
     messages.value = []
     loading.value = false
+    emit('highlight-related-nodes', [])
     return
   }
 
   loading.value = true
   error.value = ''
+
   try {
     const payload = await fetchTaskChatMessages(props.taskId)
     messages.value = payload.messages
     activeCitationPathsByMessage.value = {}
+    syncHighlightedNodes()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '问答记录加载失败。'
+    emit('highlight-related-nodes', [])
   } finally {
     loading.value = false
   }
@@ -298,11 +334,13 @@ async function handleSubmit() {
 
   sending.value = true
   error.value = ''
+
   try {
     const exchange = await submitTaskQuestion(props.taskId, trimmed)
     messages.value = [...messages.value, exchange.user_message, exchange.assistant_message]
     activeCitationPathsByMessage.value = {}
     question.value = ''
+    syncHighlightedNodes()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '提问失败。'
   } finally {
@@ -343,12 +381,29 @@ watch(
     <p v-else-if="!messages.length" class="task-chat__status">{{ emptyStatusText }}</p>
     <p v-if="error" class="task-chat__error">{{ error }}</p>
 
+    <div v-if="selectedNodeLabels.length" class="task-chat__selection">
+      <div>
+        <strong>当前图谱定位</strong>
+        <p>已关联 {{ linkedAnswerCount }} 条回答</p>
+      </div>
+      <div class="task-chat__selection-tags">
+        <span v-for="nodeId in selectedNodeLabels" :key="nodeId" class="task-chat__selection-tag">
+          {{ nodeId }}
+        </span>
+      </div>
+    </div>
+
     <div class="task-chat__messages">
       <article
         v-for="message in messages"
         :key="message.message_id"
+        :data-testid="`chat-message-${message.message_id}`"
         class="task-chat__message"
-        :class="`task-chat__message--${message.role}`"
+        :class="{
+          [`task-chat__message--${message.role}`]: true,
+          'task-chat__message--linked': isMessageLinked(message),
+        }"
+        @click="message.role === 'assistant' && emit('highlight-related-nodes', resolveMessageRelatedNodeIds(message))"
       >
         <div class="task-chat__message-header">
           <p class="task-chat__role">{{ message.role === 'user' ? '用户' : 'Agent' }}</p>
@@ -362,9 +417,7 @@ watch(
             >
               {{ renderPlanningSource(message.planner_metadata.planning_source) }}
             </span>
-            <span v-if="message.confidence" class="task-chat__confidence">
-              置信度：{{ message.confidence }}
-            </span>
+            <span v-if="message.confidence" class="task-chat__confidence">置信度：{{ message.confidence }}</span>
           </div>
         </div>
 
@@ -393,6 +446,7 @@ watch(
               </div>
             </div>
           </div>
+
           <div v-if="message.planner_metadata?.search_queries?.length" class="task-chat__planner-section">
             <h5>检索词</h5>
             <div class="task-chat__planner-query-list">
@@ -405,16 +459,41 @@ watch(
               </span>
             </div>
           </div>
+
           <div v-if="message.answer_debug?.confirmed_facts?.length" class="task-chat__planner-section">
             <h5>已确认事实</h5>
             <ul class="task-chat__planner-list">
               <li v-for="fact in message.answer_debug.confirmed_facts" :key="fact">{{ fact }}</li>
             </ul>
           </div>
+
           <div v-if="message.answer_debug?.evidence_gaps?.length" class="task-chat__planner-section">
             <h5>证据缺口</h5>
             <ul class="task-chat__planner-list">
               <li v-for="gap in message.answer_debug.evidence_gaps" :key="gap">{{ gap }}</li>
+            </ul>
+          </div>
+
+          <div
+            v-if="
+              message.answer_debug?.validation_issues?.length ||
+              message.answer_debug?.retry_attempted ||
+              (message.answer_debug?.answer_attempts ?? 1) > 1
+            "
+            class="task-chat__planner-section"
+          >
+            <h5>回答校验</h5>
+            <ul class="task-chat__planner-list">
+              <li v-for="issue in message.answer_debug?.validation_issues ?? []" :key="issue">
+                校验问题：{{ issue }}
+              </li>
+              <li v-if="message.answer_debug">
+                二次收敛：{{ message.answer_debug.retry_attempted ? '已触发' : '未触发' }}
+              </li>
+              <li v-if="message.answer_debug?.retry_attempted">
+                修复结果：{{ message.answer_debug.retry_succeeded ? '已修复' : '未修复' }}
+              </li>
+              <li v-if="message.answer_debug">回答尝试次数：{{ message.answer_debug.answer_attempts ?? 1 }}</li>
             </ul>
           </div>
         </div>
@@ -442,6 +521,7 @@ watch(
                 <p class="task-chat__graph-label">{{ evidence.label }}</p>
                 <p v-if="evidence.path" class="task-chat__graph-path">{{ evidence.path }}</p>
                 <p v-if="evidence.detail" class="task-chat__graph-detail">{{ evidence.detail }}</p>
+
                 <div
                   v-if="evidence.kind === 'call_chain' && parseCallChain(evidence.label).length"
                   class="task-chat__chain-card"
@@ -508,6 +588,7 @@ watch(
 
 .task-chat__header,
 .task-chat__state,
+.task-chat__selection,
 .task-chat__planner-debug,
 .task-chat__graph,
 .task-chat__graph-group,
@@ -520,6 +601,8 @@ watch(
 .task-chat__eyebrow,
 .task-chat__header h3,
 .task-chat__hint,
+.task-chat__selection p,
+.task-chat__selection strong,
 .task-chat__status,
 .task-chat__error,
 .task-chat__role,
@@ -554,6 +637,30 @@ watch(
   border: 1px solid var(--border);
 }
 
+.task-chat__selection {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.task-chat__selection-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-chat__selection-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .task-chat__state--building {
   background: rgba(59, 130, 246, 0.08);
   border-color: rgba(59, 130, 246, 0.2);
@@ -583,10 +690,17 @@ watch(
   border-radius: 16px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.7);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .task-chat__message--assistant {
   background: rgba(11, 110, 79, 0.08);
+}
+
+.task-chat__message--linked {
+  border-color: rgba(59, 130, 246, 0.36);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.28);
+  background: rgba(59, 130, 246, 0.08);
 }
 
 .task-chat__message-header {
@@ -746,10 +860,7 @@ watch(
   cursor: pointer;
 }
 
-.task-chat__chain-step-button--active {
-  border-left-color: #b45309;
-}
-
+.task-chat__chain-step-button--active,
 .task-chat__chain-step-button:hover {
   border-left-color: #b45309;
 }

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import AnalysisResultView from '../components/AnalysisResultView.vue'
+import CodeGraphPanel from '../components/CodeGraphPanel.vue'
 import TaskChatPanel from '../components/TaskChatPanel.vue'
 import TaskErrorState from '../components/TaskErrorState.vue'
 import TaskEventTimeline from '../components/TaskEventTimeline.vue'
@@ -22,6 +23,8 @@ const { events, connected, connect, disconnect } = useTaskStream(`/api/v1/tasks/
 const { result, pending, terminalError, notFound, load } = useAnalysisResult(props.taskId)
 
 const actionPending = ref<'stop' | 'retry' | null>(null)
+const highlightedNodeIds = ref<string[]>([])
+const selectedNodeIds = ref<string[]>([])
 
 const currentStatus = computed(() => status.value)
 const statusLoadError = computed(() => loadError.value)
@@ -77,6 +80,15 @@ onBeforeUnmount(() => {
   stopPolling()
   disconnect()
 })
+
+watch(
+  () => props.taskId,
+  () => {
+    highlightedNodeIds.value = []
+    selectedNodeIds.value = []
+  },
+  { immediate: true },
+)
 
 watch(
   isSucceeded,
@@ -151,7 +163,21 @@ watch(
 
       <section v-else-if="currentResult" class="task-layout__workspace">
         <AnalysisResultView :task-id="taskId" :result="currentResult" />
-        <TaskChatPanel v-if="showChatPanel" :task-id="taskId" :status="currentStatus ?? null" />
+        <div class="task-layout__sidecar">
+          <CodeGraphPanel
+            v-if="showChatPanel"
+            :task-id="taskId"
+            :highlighted-node-ids="highlightedNodeIds"
+            @select-node="selectedNodeIds = $event"
+          />
+          <TaskChatPanel
+            v-if="showChatPanel"
+            :task-id="taskId"
+            :status="currentStatus ?? null"
+            :selected-node-ids="selectedNodeIds"
+            @highlight-related-nodes="highlightedNodeIds = $event"
+          />
+        </div>
       </section>
     </template>
   </div>
@@ -173,6 +199,12 @@ watch(
   display: grid;
   gap: 20px;
   align-items: start;
+}
+
+.task-layout__sidecar {
+  display: grid;
+  gap: 20px;
+  align-content: start;
 }
 
 .task-layout__actions {

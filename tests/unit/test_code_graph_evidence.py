@@ -187,3 +187,121 @@ def test_graph_expander_bridges_unresolved_attribute_calls_into_matching_symbols
         and edge.to_symbol_id.endswith("app.task_queue.InMemoryTaskQueue.submit")
         for edge in subgraph.edges
     )
+
+
+def test_graph_expander_prioritizes_must_include_entities_when_node_budget_is_tight(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_files(
+        [
+            CodeFileNode(
+                task_id="task-priority",
+                path="app/task_queue.py",
+                language="python",
+                file_kind="source",
+                summary_zh="任务队列实现。",
+            ),
+            CodeFileNode(
+                task_id="task-priority",
+                path="app/a_side.py",
+                language="python",
+                file_kind="source",
+                summary_zh="旁支重试逻辑。",
+            ),
+            CodeFileNode(
+                task_id="task-priority",
+                path="app/z_main.py",
+                language="python",
+                file_kind="source",
+                summary_zh="主任务提交流程。",
+            ),
+        ]
+    )
+    graph_store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-priority",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                symbol_kind="method",
+                name="submit",
+                qualified_name="app.task_queue.InMemoryTaskQueue.submit",
+                file_path="app/task_queue.py",
+                start_line=10,
+                end_line=20,
+                summary_zh="任务入队方法。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-priority",
+                symbol_id="function:python:app/a_side.py:app.a_side.requeue",
+                symbol_kind="function",
+                name="requeue",
+                qualified_name="app.a_side.requeue",
+                file_path="app/a_side.py",
+                start_line=1,
+                end_line=8,
+                summary_zh="旁支重试逻辑。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-priority",
+                symbol_id="function:python:app/z_main.py:app.z_main.enqueue_turn_task",
+                symbol_kind="function",
+                name="enqueue_turn_task",
+                qualified_name="app.z_main.enqueue_turn_task",
+                file_path="app/z_main.py",
+                start_line=100,
+                end_line=120,
+                summary_zh="主任务提交入口。",
+                language="python",
+            ),
+        ]
+    )
+    graph_store.insert_edges(
+        [
+            CodeEdge(
+                task_id="task-priority",
+                from_symbol_id="function:python:app/a_side.py:app.a_side.requeue",
+                to_symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                edge_kind="calls",
+                source_path="app/a_side.py",
+                line=3,
+            ),
+            CodeEdge(
+                task_id="task-priority",
+                from_symbol_id="function:python:app/z_main.py:app.z_main.enqueue_turn_task",
+                to_symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                edge_kind="calls",
+                source_path="app/z_main.py",
+                line=110,
+            ),
+        ]
+    )
+
+    seeds = [
+        RetrievalCandidate(
+            task_id="task-priority",
+            item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+            item_type="symbol",
+            path="app/task_queue.py",
+            symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+            qualified_name="app.task_queue.InMemoryTaskQueue.submit",
+            score=120.0,
+            source="exact",
+            summary_zh="任务入队方法。",
+        )
+    ]
+
+    subgraph = GraphExpander(graph_store=graph_store).expand(
+        task_id="task-priority",
+        seeds=seeds,
+        max_hops=1,
+        max_nodes=2,
+        must_include_entities=["enqueue_turn_task"],
+    )
+
+    qualified_names = [symbol.qualified_name for symbol in subgraph.symbols]
+    assert "app.task_queue.InMemoryTaskQueue.submit" in qualified_names
+    assert "app.z_main.enqueue_turn_task" in qualified_names
+    assert "app.a_side.requeue" not in qualified_names

@@ -64,9 +64,47 @@ class TaskGraphEvidence(BaseModel):
     path: str | None = None
 
 
+class TaskGraphNodePayload(BaseModel):
+    node_id: str
+    kind: Literal["file", "symbol"]
+    label: str
+    path: str | None = None
+    summary: str | None = None
+    language: str | None = None
+    file_kind: str | None = None
+    symbol_kind: str | None = None
+    qualified_name: str | None = None
+    parent_node_id: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    is_focus: bool = False
+
+
+class TaskGraphEdgePayload(BaseModel):
+    from_node_id: str
+    to_node_id: str
+    kind: str
+    path: str | None = None
+    line: int | None = None
+    confidence: float | None = None
+
+
+class TaskGraphPayload(BaseModel):
+    task_id: str
+    view: Literal["repository", "symbol", "module"]
+    focus_node_id: str | None = None
+    nodes: list[TaskGraphNodePayload] = Field(default_factory=list)
+    edges: list[TaskGraphEdgePayload] = Field(default_factory=list)
+
+
 class AnswerDebug(BaseModel):
     confirmed_facts: list[str] = Field(default_factory=list)
     evidence_gaps: list[str] = Field(default_factory=list)
+    validation_issues: list[str] = Field(default_factory=list)
+    retry_attempted: bool = False
+    retry_succeeded: bool = False
+    answer_attempts: int = Field(default=1, ge=1)
+    related_node_ids: list[str] = Field(default_factory=list)
 
 
 class TaskChatMessage(BaseModel):

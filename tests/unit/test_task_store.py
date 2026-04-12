@@ -214,6 +214,11 @@ async def test_task_store_chat_messages_preserve_answer_debug(fakeredis_client):
             answer_debug=AnswerDebug(
                 confirmed_facts=["已确认 app/main.py 是后端入口"],
                 evidence_gaps=["尚未定位更深层调用链"],
+                validation_issues=["missing_must_include_entity"],
+                retry_attempted=True,
+                retry_succeeded=True,
+                answer_attempts=2,
+                related_node_ids=["function:python:app/main.py:app.main.health"],
             ),
         ),
     )
@@ -223,3 +228,8 @@ async def test_task_store_chat_messages_preserve_answer_debug(fakeredis_client):
     assert messages[0].answer_debug is not None
     assert messages[0].answer_debug.confirmed_facts == ["已确认 app/main.py 是后端入口"]
     assert messages[0].answer_debug.evidence_gaps == ["尚未定位更深层调用链"]
+    assert messages[0].answer_debug.validation_issues == ["missing_must_include_entity"]
+    assert messages[0].answer_debug.retry_attempted is True
+    assert messages[0].answer_debug.retry_succeeded is True
+    assert messages[0].answer_debug.answer_attempts == 2
+    assert messages[0].answer_debug.related_node_ids == ["function:python:app/main.py:app.main.health"]

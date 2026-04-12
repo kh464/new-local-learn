@@ -25,6 +25,8 @@ class GraphExpander:
         seeds: list[RetrievalCandidate],
         max_hops: int = 2,
         max_nodes: int = 30,
+        must_include_entities: list[str] | None = None,
+        preferred_evidence_kinds: list[str] | None = None,
     ) -> ExpandedSubgraph:
         files_by_path = {file.path: file for file in self._graph_store.list_files(task_id=task_id)}
         symbols_by_id = {symbol.symbol_id: symbol for symbol in self._graph_store.list_symbols(task_id=task_id)}
@@ -34,17 +36,39 @@ class GraphExpander:
 
         visited_symbols: set[str] = set()
         collected_edges: list[CodeEdge] = []
-        queue: list[tuple[str, int]] = []
+        queue: list[tuple[int, float, str]] = []
+        must_include_entities = list(must_include_entities or [])
+        preferred_evidence_kinds = list(preferred_evidence_kinds or [])
 
         for seed in seeds:
             if seed.symbol_id:
-                queue.append((seed.symbol_id, 0))
+                self._enqueue_symbol(
+                    queue=queue,
+                    symbol_id=seed.symbol_id,
+                    hop=0,
+                    priority=self._symbol_priority_score(
+                        symbol=symbols_by_id.get(seed.symbol_id),
+                        must_include_entities=must_include_entities,
+                        preferred_evidence_kinds=preferred_evidence_kinds,
+                    )
+                    + 100.0,
+                )
             elif seed.path:
                 for symbol in self._graph_store.list_symbols(task_id=task_id, file_path=seed.path):
-                    queue.append((symbol.symbol_id, 0))
+                    self._enqueue_symbol(
+                        queue=queue,
+                        symbol_id=symbol.symbol_id,
+                        hop=0,
+                        priority=self._symbol_priority_score(
+                            symbol=symbol,
+                            must_include_entities=must_include_entities,
+                            preferred_evidence_kinds=preferred_evidence_kinds,
+                        ),
+                    )
 
         while queue and len(visited_symbols) < max_nodes:
-            symbol_id, hop = queue.pop(0)
+            queue.sort(key=lambda item: (item[0], -item[1], item[2]))
+            hop, _, symbol_id = queue.pop(0)
             if symbol_id in visited_symbols:
                 continue
             visited_symbols.add(symbol_id)
@@ -58,7 +82,16 @@ class GraphExpander:
                 collected_edges.append(edge)
                 neighbor = edge.to_symbol_id if edge.from_symbol_id == symbol_id else edge.from_symbol_id
                 if neighbor in symbols_by_id and neighbor not in visited_symbols:
-                    queue.append((neighbor, hop + 1))
+                    self._enqueue_symbol(
+                        queue=queue,
+                        symbol_id=neighbor,
+                        hop=hop + 1,
+                        priority=self._symbol_priority_score(
+                            symbol=symbols_by_id.get(neighbor),
+                            must_include_entities=must_include_entities,
+                            preferred_evidence_kinds=preferred_evidence_kinds,
+                        ),
+                    )
 
             for edge in self._resolve_unresolved_neighbors(
                 task_id=task_id,
@@ -67,7 +100,16 @@ class GraphExpander:
             ):
                 collected_edges.append(edge)
                 if edge.to_symbol_id in symbols_by_id and edge.to_symbol_id not in visited_symbols:
-                    queue.append((edge.to_symbol_id, hop + 1))
+                    self._enqueue_symbol(
+                        queue=queue,
+                        symbol_id=edge.to_symbol_id,
+                        hop=hop + 1,
+                        priority=self._symbol_priority_score(
+                            symbol=symbols_by_id.get(edge.to_symbol_id),
+                            must_include_entities=must_include_entities,
+                            preferred_evidence_kinds=preferred_evidence_kinds,
+                        ),
+                    )
 
         collected_symbols = [symbols_by_id[symbol_id] for symbol_id in visited_symbols if symbol_id in symbols_by_id]
         collected_paths = {symbol.file_path for symbol in collected_symbols}
@@ -91,6 +133,50 @@ class GraphExpander:
             symbols=sorted(collected_symbols, key=lambda item: (item.file_path, item.start_line, item.qualified_name)),
             edges=dedup_edges,
         )
+
+    def _enqueue_symbol(self, *, queue: list[tuple[int, float, str]], symbol_id: str, hop: int, priority: float) -> None:
+        queue.append((hop, priority, symbol_id))
+
+    def _symbol_priority_score(
+        self,
+        *,
+        symbol: CodeSymbolNode | None,
+        must_include_entities: list[str],
+        preferred_evidence_kinds: list[str],
+    ) -> float:
+        if symbol is None:
+            return 0.0
+        text = " ".join(
+            part.lower()
+            for part in (
+                symbol.name,
+                symbol.qualified_name,
+                symbol.file_path,
+                symbol.summary_zh,
+            )
+            if part
+        )
+        score = 0.0
+        for entity in must_include_entities:
+            normalized = str(entity or "").strip().lower()
+            if len(normalized) < 2:
+                continue
+            if normalized == symbol.name.lower() or normalized == symbol.qualified_name.lower():
+                score += 40.0
+                continue
+            if normalized in text:
+                score += 20.0
+
+        evidence_kinds = {str(kind or "").strip().lower() for kind in preferred_evidence_kinds if str(kind or "").strip()}
+        if "route_fact" in evidence_kinds and symbol.symbol_kind == "route":
+            score += 18.0
+        if "call_chain" in evidence_kinds and symbol.symbol_kind in {"route", "function", "method"}:
+            score += 6.0
+        if "state_assignment_fact" in evidence_kinds and (
+            "create_app" in text or "app.state" in text or "state" in text
+        ):
+            score += 10.0
+        return score
 
     def _resolve_unresolved_neighbors(
         self,

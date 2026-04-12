@@ -51,7 +51,7 @@ function createResult(): AnalysisResult {
     },
     logic_summary: { flows: [] },
     tutorial_summary: {
-      mental_model: '这是一个简单的调用链路。',
+      mental_model: 'simple request lifecycle',
       request_lifecycle: [],
       run_steps: [],
       pitfalls: [],
@@ -61,9 +61,9 @@ function createResult(): AnalysisResult {
       code_walkthroughs: [],
     },
     critique_summary: {
-      coverage_notes: ['观察到 1 个部署服务。'],
+      coverage_notes: ['observed one deploy service'],
       inferred_sections: [],
-      missing_areas: ['没有检测到 Kubernetes 清单。'],
+      missing_areas: ['no kubernetes manifests detected'],
     },
     mermaid_sections: { system: 'graph TD\nA-->B' },
   }
@@ -107,8 +107,19 @@ vi.mock('../composables/useAnalysisResult', () => ({
 
 vi.mock('../components/TaskChatPanel.vue', () => ({
   default: {
-    props: ['taskId', 'status'],
-    template: '<section data-testid="task-chat-panel">chat panel {{ taskId }} {{ status?.knowledge_state }}</section>',
+    props: ['taskId', 'status', 'selectedNodeIds'],
+    emits: ['highlight-related-nodes'],
+    template:
+      '<section data-testid="task-chat-panel">chat panel {{ taskId }} {{ status?.knowledge_state }} {{ selectedNodeIds?.join(",") }}<button data-testid="emit-highlight" @click="$emit(\'highlight-related-nodes\', [\'symbol:health\'])">emit</button></section>',
+  },
+}))
+
+vi.mock('../components/CodeGraphPanel.vue', () => ({
+  default: {
+    props: ['taskId', 'highlightedNodeIds'],
+    emits: ['select-node'],
+    template:
+      '<section data-testid="code-graph-panel">graph panel {{ taskId }} {{ highlightedNodeIds?.join(",") }}<button data-testid="emit-select-node" @click="$emit(\'select-node\', [\'file:app/main.py\'])">select</button></section>',
   },
 }))
 
@@ -169,6 +180,35 @@ describe('TaskDetailPage', () => {
     expect(wrapper.text()).toContain('task-1')
     expect(wrapper.text()).toContain('Hello-World')
     expect(wrapper.text()).toContain('chat panel task-1 ready')
+    expect(wrapper.text()).toContain('graph panel task-1')
+  })
+
+  it('passes highlighted node ids from the chat panel into the graph panel', async () => {
+    const wrapper = mount(TaskDetailPage, {
+      props: {
+        taskId: 'task-1',
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-testid="emit-highlight"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('graph panel task-1 symbol:health')
+  })
+
+  it('passes selected graph node ids back into the chat panel', async () => {
+    const wrapper = mount(TaskDetailPage, {
+      props: {
+        taskId: 'task-1',
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-testid="emit-select-node"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('chat panel task-1 ready file:app/main.py')
   })
 
   it('keeps the chat panel visible while the knowledge base is still building', async () => {

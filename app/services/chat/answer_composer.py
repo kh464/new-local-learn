@@ -42,7 +42,14 @@ class AnswerComposer:
         self._max_history_messages = max(0, max_history_messages)
         self._max_snippet_chars = max(80, max_snippet_chars)
 
-    async def compose(self, *, question: str, evidence_pack: EvidencePack, history: list) -> dict[str, object]:
+    async def compose(
+        self,
+        *,
+        question: str,
+        evidence_pack: EvidencePack,
+        history: list,
+        validation_feedback: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         if self._client is not None:
             try:
                 payload = await self._client.complete_json(
@@ -51,6 +58,7 @@ class AnswerComposer:
                         question=question,
                         evidence_pack=evidence_pack,
                         history=history,
+                        validation_feedback=validation_feedback,
                     ),
                 )
                 validated = _AnswerPayload.model_validate(payload)
@@ -65,7 +73,14 @@ class AnswerComposer:
 
         return self._compose_local(question=question, evidence_pack=evidence_pack)
 
-    def _build_user_prompt(self, *, question: str, evidence_pack: EvidencePack, history: list) -> str:
+    def _build_user_prompt(
+        self,
+        *,
+        question: str,
+        evidence_pack: EvidencePack,
+        history: list,
+        validation_feedback: dict[str, object] | None = None,
+    ) -> str:
         payload = {
             "question": question,
             "history": [
@@ -82,6 +97,13 @@ class AnswerComposer:
                 "must_distinguish_fact_and_inference": True,
                 "if_insufficient_evidence": "明确说明证据不足，并指出缺失证据",
             },
+            "answer_focus": {
+                "question_type": evidence_pack.question_type,
+                "retrieval_objective": evidence_pack.retrieval_objective,
+                "must_include_entities": list(evidence_pack.must_include_entities),
+                "preferred_evidence_kinds": list(evidence_pack.preferred_evidence_kinds),
+            },
+            "retry_context": dict(validation_feedback or {}),
             "evidence_pack": {
                 "question": evidence_pack.question,
                 "planning_source": evidence_pack.planning_source,
@@ -137,7 +159,7 @@ class AnswerComposer:
 
     def _compose_local(self, *, question: str, evidence_pack: EvidencePack) -> dict[str, object]:
         if evidence_pack.call_chains:
-            chain = evidence_pack.call_chains[0]
+            chain = self._select_best_call_chain(evidence_pack)
             return {
                 "answer": f"根据当前仓库证据，最相关的调用链是：{chain.title}。",
                 "supplemental_notes": self._build_local_notes(evidence_pack, fallback_limit=2),
@@ -211,3 +233,45 @@ class AnswerComposer:
         if evidence_pack.gaps:
             notes.extend(evidence_pack.gaps[: max(0, 3 - len(notes))])
         return notes[:3]
+
+    def _select_best_call_chain(self, evidence_pack: EvidencePack):
+        if len(evidence_pack.call_chains) <= 1:
+            return evidence_pack.call_chains[0]
+        ranked = sorted(
+            evidence_pack.call_chains,
+            key=lambda item: (
+                -self._call_chain_focus_score(item=item, evidence_pack=evidence_pack),
+                item.title,
+            ),
+        )
+        return ranked[0]
+
+    def _call_chain_focus_score(self, *, item, evidence_pack: EvidencePack) -> int:
+        text = " ".join(
+            part.lower()
+            for part in (
+                item.title,
+                item.summary,
+                item.path,
+                evidence_pack.retrieval_objective,
+                evidence_pack.question,
+            )
+            if part
+        )
+        score = 0
+        for entity in evidence_pack.must_include_entities:
+            normalized = str(entity or "").strip().lower()
+            if len(normalized) < 2:
+                continue
+            if normalized in text:
+                score += 4
+        evidence_kinds = {
+            str(kind or "").strip().lower()
+            for kind in evidence_pack.preferred_evidence_kinds
+            if str(kind or "").strip()
+        }
+        if "call_chain" in evidence_kinds:
+            score += 1
+        if "route_fact" in evidence_kinds and "/" in item.title:
+            score += 1
+        return score

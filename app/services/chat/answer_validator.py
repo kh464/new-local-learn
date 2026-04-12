@@ -38,11 +38,13 @@ class AnswerValidator:
         answer_entities = self._extract_code_entities("\n".join([answer, *supplemental_notes]))
         if any(entity.lower() not in allowed_entities for entity in answer_entities):
             issues.append("ungrounded_entity")
+        if self._is_missing_must_include_entity(answer=answer, supplemental_notes=supplemental_notes, pack=pack):
+            issues.append("missing_must_include_entity")
 
         return {
             "passed": not issues,
             "issues": issues,
-            "retryable": "ungrounded_entity" in issues,
+            "retryable": any(issue in {"ungrounded_entity", "missing_must_include_entity"} for issue in issues),
             "should_expand_context": False,
             "confidence_override": "low" if issues else None,
         }
@@ -67,4 +69,37 @@ class AnswerValidator:
 
     def _contains_evidence_disclosure(self, *, answer: str, supplemental_notes: list[str]) -> bool:
         combined = "\n".join([answer, *supplemental_notes])
-        return any(marker in combined for marker in ("证据不足", "当前证据不足", "现有证据不足", "缺少证据", "尚未定位", "尚未命中"))
+        return any(
+            marker in combined
+            for marker in ("证据不足", "当前证据不足", "现有证据不足", "缺少证据", "尚未定位", "尚未命中")
+        )
+
+    def _is_missing_must_include_entity(self, *, answer: str, supplemental_notes: list[str], pack: EvidencePack) -> bool:
+        if not pack.must_include_entities:
+            return False
+        evidence_text = "\n".join(self._collect_evidence_texts(pack))
+        answer_text = "\n".join([answer, *supplemental_notes]).lower()
+        for entity in pack.must_include_entities:
+            normalized = str(entity or "").strip().lower()
+            if len(normalized) < 2:
+                continue
+            if normalized not in evidence_text:
+                continue
+            if normalized not in answer_text:
+                return True
+        return False
+
+    def _collect_evidence_texts(self, pack: EvidencePack) -> list[str]:
+        texts = list(pack.key_findings)
+        texts.extend([pack.question, pack.retrieval_objective])
+        for group in (
+            pack.entrypoints,
+            pack.call_chains,
+            pack.routes,
+            pack.files,
+            pack.symbols,
+            pack.citations,
+        ):
+            for item in group:
+                texts.extend(filter(None, [item.path, item.title, item.summary, item.snippet]))
+        return [str(text).lower() for text in texts if str(text or "").strip()]

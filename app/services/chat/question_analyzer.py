@@ -135,20 +135,35 @@ class QuestionAnalyzer:
     def __init__(self, *, llm_client=None) -> None:
         self._llm_client = llm_client
 
-    async def analyze(self, *, question: str, history: list[dict[str, str]]) -> QuestionAnalysis:
+    async def analyze(
+        self,
+        *,
+        question: str,
+        history: list[dict[str, str]],
+        planning_context: dict[str, object] | None = None,
+    ) -> QuestionAnalysis:
         if self._llm_client is not None:
             try:
                 payload = await self._llm_client.complete_json(
                     system_prompt=_SYSTEM_PROMPT,
-                    user_prompt=json.dumps({"question": question, "history": history[-6:]}, ensure_ascii=False),
+                    user_prompt=json.dumps(
+                        {"question": question, "history": history[-6:], "planning_context": planning_context or {}},
+                        ensure_ascii=False,
+                    ),
                 )
-                return self._normalize_payload(payload, question)
+                return self._normalize_payload(payload, question, planning_context=planning_context)
             except Exception:
                 pass
-        return self._fallback(question)
+        return self._fallback(question, planning_context=planning_context)
 
-    def _normalize_payload(self, payload: dict[str, object], question: str) -> QuestionAnalysis:
-        fallback = self._fallback(question)
+    def _normalize_payload(
+        self,
+        payload: dict[str, object],
+        question: str,
+        *,
+        planning_context: dict[str, object] | None = None,
+    ) -> QuestionAnalysis:
+        fallback = self._fallback(question, planning_context=planning_context)
         normalized_question = str(payload.get("normalized_question") or fallback.normalized_question).strip()
         llm_question_type = str(payload.get("question_type") or "").strip()
         question_type = self._select_question_type(llm_question_type=llm_question_type, fallback=fallback.question_type)
@@ -215,12 +230,16 @@ class QuestionAnalyzer:
             preferred_evidence_kinds=preferred_evidence_kinds or fallback.preferred_evidence_kinds,
         )
 
-    def _fallback(self, question: str) -> QuestionAnalysis:
+    def _fallback(self, question: str, *, planning_context: dict[str, object] | None = None) -> QuestionAnalysis:
         normalized_question = question.strip()
         raw_routes = self._extract_route_queries(normalized_question)
         raw_files = self._extract_files(normalized_question)
         raw_symbols = self._extract_symbols(normalized_question)
+        context_files, context_symbols, context_keywords = self._extract_planning_context_entities(planning_context)
+        raw_files = self._merge_unique(raw_files, context_files)
+        raw_symbols = self._merge_unique(raw_symbols, context_symbols)
         raw_keywords = self._extract_keywords(normalized_question, raw_symbols=raw_symbols, raw_files=raw_files)
+        raw_keywords = self._merge_unique(raw_keywords, context_keywords)
         question_type = self._classify_question_type(
             question=normalized_question,
             raw_routes=raw_routes,
@@ -266,6 +285,56 @@ class QuestionAnalyzer:
             must_include_entities=must_include_entities,
             preferred_evidence_kinds=preferred_evidence_kinds,
         )
+
+    def _extract_planning_context_entities(
+        self,
+        planning_context: dict[str, object] | None,
+    ) -> tuple[list[str], list[str], list[str]]:
+        if not isinstance(planning_context, dict):
+            return [], [], []
+        file_hints = planning_context.get("file_hints")
+        symbol_hints = planning_context.get("symbol_hints")
+        relation_hints = planning_context.get("relation_hints")
+        keyword_hints = planning_context.get("keyword_hints")
+        files: list[str] = []
+        symbols: list[str] = []
+        keywords: list[str] = []
+        if isinstance(file_hints, list):
+            for item in file_hints[:4]:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("path") or "").strip()
+                if path:
+                    files.append(path)
+        if isinstance(symbol_hints, list):
+            for item in symbol_hints[:4]:
+                if not isinstance(item, dict):
+                    continue
+                qualified_name = str(item.get("qualified_name") or "").strip()
+                file_path = str(item.get("file_path") or "").strip()
+                if qualified_name:
+                    symbols.append(qualified_name)
+                if file_path:
+                    files.append(file_path)
+        if isinstance(relation_hints, list):
+            for item in relation_hints[:4]:
+                if not isinstance(item, dict):
+                    continue
+                from_name = str(item.get("from_qualified_name") or "").strip()
+                to_name = str(item.get("to_qualified_name") or "").strip()
+                source_path = str(item.get("source_path") or "").strip()
+                if from_name:
+                    symbols.append(from_name)
+                if to_name:
+                    symbols.append(to_name)
+                if source_path:
+                    files.append(source_path)
+        if isinstance(keyword_hints, list):
+            for item in keyword_hints[:6]:
+                text = str(item or "").strip()
+                if text:
+                    keywords.append(text)
+        return self._merge_unique(files), self._merge_unique(symbols), self._merge_unique(keywords)
 
     def _select_question_type(self, *, llm_question_type: str, fallback: str) -> str:
         if llm_question_type in {"", "unknown"}:

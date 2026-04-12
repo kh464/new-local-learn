@@ -21,9 +21,12 @@ class PlannerResult(BaseModel):
     answer_depth: str
     current_hypothesis: str
     gaps: list[str] = Field(default_factory=list)
+    question_type: str = "module_responsibility"
     normalized_question: str = ""
     retrieval_objective: str = ""
     search_queries: list[str] = Field(default_factory=list)
+    must_include_entities: list[str] = Field(default_factory=list)
+    preferred_evidence_kinds: list[str] = Field(default_factory=list)
     ready_to_answer: bool = False
     tool_call: AgentToolCall | None = None
 
@@ -36,11 +39,16 @@ class EvidenceItem(BaseModel):
     start_line: int | None = None
     end_line: int | None = None
     snippet: str = ""
+    node_ids: list[str] = Field(default_factory=list)
 
 
 class EvidencePack(BaseModel):
     question: str
     planning_source: str
+    question_type: str | None = None
+    retrieval_objective: str = ""
+    must_include_entities: list[str] = Field(default_factory=list)
+    preferred_evidence_kinds: list[str] = Field(default_factory=list)
     entrypoints: list[EvidenceItem] = Field(default_factory=list)
     call_chains: list[EvidenceItem] = Field(default_factory=list)
     routes: list[EvidenceItem] = Field(default_factory=list)

@@ -53,6 +53,10 @@ describe('TaskChatPanel planner metadata', () => {
           answer_debug: {
             confirmed_facts: ['已确认命中 KnowledgeRetriever', '已确认仓库存在检索实现'],
             evidence_gaps: ['尚未定位向量检索入口'],
+            validation_issues: ['missing_must_include_entity'],
+            retry_attempted: true,
+            retry_succeeded: true,
+            answer_attempts: 2,
           },
           planner_metadata: {
             planning_source: 'rule',
@@ -90,5 +94,10 @@ describe('TaskChatPanel planner metadata', () => {
     expect(wrapper.text()).toContain('capability_fact')
     expect(wrapper.text()).toContain('已确认命中 KnowledgeRetriever')
     expect(wrapper.text()).toContain('尚未定位向量检索入口')
+    expect(wrapper.text()).toContain('回答校验')
+    expect(wrapper.text()).toContain('missing_must_include_entity')
+    expect(wrapper.text()).toContain('已触发')
+    expect(wrapper.text()).toContain('已修复')
+    expect(wrapper.text()).toContain('2')
   })
 })

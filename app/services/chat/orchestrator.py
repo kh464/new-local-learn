@@ -108,8 +108,6 @@ class TaskChatOrchestrator:
                 history=history,
             )
 
-        del task_id, db_path
-
         observations: list[AgentObservation] = []
         used_tools: list[str] = []
         planning_source = "llm"
@@ -117,6 +115,8 @@ class TaskChatOrchestrator:
         scoped_history = self._scope_history_for_question(question=question, history=history)
         history_payload = [{"role": item.role, "content": item.content} for item in scoped_history]
         available_tools = await self._list_available_tools()
+        planning_context = await self._build_planning_context(task_id=task_id, question=question)
+        del task_id, db_path
 
         last_plan = None
         plan_count = 0
@@ -124,13 +124,14 @@ class TaskChatOrchestrator:
             try:
                 if self._planning_agent is None:
                     raise RuntimeError("Planning agent is unavailable.")
-                plan = await self._planning_agent.plan(
+                plan = await self._plan_with_context(
                     question=question,
                     history=history_payload,
                     observations=observations,
                     available_tools=available_tools,
                     loop_count=loop_index,
                     remaining_loops=self._max_loops - loop_index,
+                    planning_context=planning_context,
                 )
             except Exception:
                 if self._fallback_planner is None:
@@ -168,12 +169,10 @@ class TaskChatOrchestrator:
             observations=observations,
         )
 
-        draft = await self._compose_answer(question=question, evidence_pack=evidence_pack, history=scoped_history)
-        validation = await self._validate_answer(
+        draft, validation, answer_debug_meta = await self._compose_and_validate_answer(
             question=question,
-            answer=draft["answer"],
-            supplemental_notes=draft["supplemental_notes"],
             evidence_pack=evidence_pack,
+            history=scoped_history,
         )
         confidence = draft["confidence"]
         confidence_override = validation.get("confidence_override")
@@ -187,7 +186,7 @@ class TaskChatOrchestrator:
             supplemental_notes=list(draft["supplemental_notes"]),
             confidence=confidence,
             answer_source=draft["answer_source"],
-            answer_debug=self._build_answer_debug(evidence_pack),
+            answer_debug=self._build_answer_debug(evidence_pack, answer_debug_meta),
             planner_metadata=PlannerMetadata(
                 planning_source=planning_source,
                 loop_count=loop_count,
@@ -224,8 +223,11 @@ class TaskChatOrchestrator:
     ) -> TaskChatResponse:
         scoped_history = self._scope_history_for_question(question=question, history=history)
         history_payload = [{"role": item.role, "content": item.content} for item in scoped_history]
-        analysis = await self._maybe_await(
-            self._question_analyzer.analyze(question=question, history=history_payload)
+        planning_context = await self._build_planning_context(task_id=task_id, question=question)
+        analysis = await self._analyze_question(
+            question=question,
+            history_payload=history_payload,
+            planning_context=planning_context,
         )
         exact_hits = self._exact_retriever.retrieve(
             task_id=task_id,
@@ -252,6 +254,8 @@ class TaskChatOrchestrator:
             semantic_hits=semantic_hits,
             question_type=analysis.question_type,
             search_queries=list(analysis.search_queries),
+            must_include_entities=list(getattr(analysis, "must_include_entities", []) or []),
+            preferred_evidence_kinds=list(getattr(analysis, "preferred_evidence_kinds", []) or []),
             limit=8,
         )
         max_hops = 3 if analysis.question_type == "architecture_explanation" else 2
@@ -260,6 +264,8 @@ class TaskChatOrchestrator:
             seeds=ranked_hits,
             max_hops=max_hops,
             max_nodes=20,
+            must_include_entities=list(getattr(analysis, "must_include_entities", []) or []),
+            preferred_evidence_kinds=list(getattr(analysis, "preferred_evidence_kinds", []) or []),
         )
         snippets = self._code_locator.locate(subgraph=subgraph)
         graph_evidence_pack = self._graph_evidence_builder.build(
@@ -269,13 +275,16 @@ class TaskChatOrchestrator:
             subgraph=subgraph,
             snippets=snippets,
         )
-        chat_evidence_pack = self._convert_graph_evidence(graph_evidence_pack)
-        draft = await self._compose_answer(question=question, evidence_pack=chat_evidence_pack, history=scoped_history)
-        validation = await self._validate_answer(
+        chat_evidence_pack = self._convert_graph_evidence(
+            graph_evidence_pack,
+            question_type=analysis.question_type,
+            must_include_entities=list(getattr(analysis, "must_include_entities", []) or []),
+            preferred_evidence_kinds=list(getattr(analysis, "preferred_evidence_kinds", []) or []),
+        )
+        draft, validation, answer_debug_meta = await self._compose_and_validate_answer(
             question=question,
-            answer=draft["answer"],
-            supplemental_notes=draft["supplemental_notes"],
             evidence_pack=chat_evidence_pack,
+            history=scoped_history,
         )
         confidence = draft["confidence"]
         confidence_override = validation.get("confidence_override")
@@ -293,7 +302,7 @@ class TaskChatOrchestrator:
             supplemental_notes=list(draft["supplemental_notes"]),
             confidence=confidence,
             answer_source=draft["answer_source"],
-            answer_debug=self._build_answer_debug(chat_evidence_pack),
+            answer_debug=self._build_answer_debug(chat_evidence_pack, answer_debug_meta),
             planner_metadata=PlannerMetadata(
                 planning_source="hybrid_rag",
                 loop_count=1,
@@ -307,17 +316,59 @@ class TaskChatOrchestrator:
             ),
         )
 
-    def _convert_graph_evidence(self, graph_pack) -> EvidencePack:
+    async def _build_planning_context(self, *, task_id: str, question: str) -> dict[str, object] | None:
+        if self._exact_retriever is None or not hasattr(self._exact_retriever, "build_planning_context"):
+            return None
+        return await self._maybe_await(
+            self._exact_retriever.build_planning_context(task_id=task_id, question=question, limit=6)
+        )
+
+    async def _plan_with_context(self, **kwargs):
+        plan = self._planning_agent.plan
+        parameters = inspect.signature(plan).parameters
+        if "planning_context" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ):
+            return await self._maybe_await(plan(**kwargs))
+        kwargs.pop("planning_context", None)
+        return await self._maybe_await(plan(**kwargs))
+
+    async def _analyze_question(
+        self,
+        *,
+        question: str,
+        history_payload: list[dict[str, str]],
+        planning_context: dict[str, object] | None,
+    ):
+        analyze = self._question_analyzer.analyze
+        parameters = inspect.signature(analyze).parameters
+        if "planning_context" in parameters:
+            return await self._maybe_await(
+                analyze(question=question, history=history_payload, planning_context=planning_context)
+            )
+        return await self._maybe_await(analyze(question=question, history=history_payload))
+
+    def _convert_graph_evidence(
+        self,
+        graph_pack,
+        *,
+        question_type: str | None = None,
+        must_include_entities: list[str] | None = None,
+        preferred_evidence_kinds: list[str] | None = None,
+    ) -> EvidencePack:
         node_items_by_id: dict[str, EvidenceItem] = {}
         node_meta_by_id: dict[str, dict[str, object]] = {}
         seed_ids = {str(seed.symbol_id) for seed in list(getattr(graph_pack, "seeds", []) or []) if getattr(seed, "symbol_id", None)}
         seed_paths = {str(seed.path) for seed in list(getattr(graph_pack, "seeds", []) or []) if getattr(seed, "path", None)}
+        must_include_entities = list(must_include_entities or [])
+        preferred_evidence_kinds = list(preferred_evidence_kinds or [])
         question_text = " ".join(
             part.strip()
             for part in (
                 str(getattr(graph_pack, "question", "") or ""),
                 str(getattr(graph_pack, "normalized_question", "") or ""),
                 str(getattr(graph_pack, "retrieval_objective", "") or ""),
+                " ".join(must_include_entities),
             )
             if part and str(part).strip()
         )
@@ -330,6 +381,7 @@ class TaskChatOrchestrator:
                 summary=str(node.get("summary_zh") or ""),
                 start_line=self._coerce_int(node.get("start_line")),
                 end_line=self._coerce_int(node.get("end_line")),
+                node_ids=[f"file:{str(node.get('path') or '')}"] if str(node.get("path") or "").strip() else [],
             )
             for node in graph_pack.graph_nodes
             if node.get("kind") == "file"
@@ -346,6 +398,7 @@ class TaskChatOrchestrator:
                 summary=str(node.get("summary_zh") or ""),
                 start_line=self._coerce_int(node.get("start_line")),
                 end_line=self._coerce_int(node.get("end_line")),
+                node_ids=[node_id] if node_id else ([f"file:{str(node.get('path') or '')}"] if str(node.get("path") or "").strip() else []),
             )
             if kind == "file":
                 if node.get("entry_role"):
@@ -357,6 +410,7 @@ class TaskChatOrchestrator:
                             summary=item.summary,
                             start_line=item.start_line,
                             end_line=item.end_line,
+                            node_ids=list(item.node_ids),
                         )
                     )
                 if node_id:
@@ -380,6 +434,7 @@ class TaskChatOrchestrator:
                 start_line=item.start_line,
                 end_line=item.end_line,
                 snippet=item.snippet,
+                node_ids=[f"file:{item.path}"] if item.path else [],
             )
             for item in graph_pack.snippets
         ]
@@ -389,6 +444,9 @@ class TaskChatOrchestrator:
             seed_ids=seed_ids,
             seed_paths=seed_paths,
             question_text=question_text,
+            question_type=question_type,
+            must_include_entities=must_include_entities,
+            preferred_evidence_kinds=preferred_evidence_kinds,
         )
         key_findings = self._merge_unique_strings(
             self._build_graph_key_findings(
@@ -400,6 +458,9 @@ class TaskChatOrchestrator:
                 seed_ids=seed_ids,
                 seed_paths=seed_paths,
                 question_text=question_text,
+                question_type=question_type,
+                must_include_entities=must_include_entities,
+                preferred_evidence_kinds=preferred_evidence_kinds,
             ),
             list(graph_pack.summaries),
         )
@@ -411,6 +472,10 @@ class TaskChatOrchestrator:
         return EvidencePack(
             question=graph_pack.question,
             planning_source="hybrid_rag",
+            question_type=question_type,
+            retrieval_objective=str(getattr(graph_pack, "retrieval_objective", "") or ""),
+            must_include_entities=must_include_entities,
+            preferred_evidence_kinds=preferred_evidence_kinds,
             entrypoints=entrypoints,
             call_chains=call_chains,
             routes=routes,
@@ -430,6 +495,9 @@ class TaskChatOrchestrator:
         seed_ids: set[str],
         seed_paths: set[str],
         question_text: str,
+        question_type: str | None,
+        must_include_entities: list[str],
+        preferred_evidence_kinds: list[str],
     ) -> list[EvidenceItem]:
         ranked_call_chains: list[tuple[int, EvidenceItem]] = []
         for edge in graph_edges:
@@ -451,6 +519,9 @@ class TaskChatOrchestrator:
                 seed_ids=seed_ids,
                 seed_paths=seed_paths,
                 question_text=question_text,
+                question_type=question_type,
+                must_include_entities=must_include_entities,
+                preferred_evidence_kinds=preferred_evidence_kinds,
             )
             if edge_kind == "calls" and relevance < 3:
                 continue
@@ -477,6 +548,7 @@ class TaskChatOrchestrator:
                     summary="，".join(summary_parts) + "。",
                     start_line=target_item.start_line or route_item.start_line,
                     end_line=target_item.end_line or route_item.end_line,
+                    node_ids=self._merge_unique_strings(list(route_item.node_ids), list(target_item.node_ids)),
                 )
             ranked_call_chains.append(
                 (
@@ -498,6 +570,9 @@ class TaskChatOrchestrator:
         seed_ids: set[str],
         seed_paths: set[str],
         question_text: str,
+        question_type: str | None,
+        must_include_entities: list[str],
+        preferred_evidence_kinds: list[str],
     ) -> list[str]:
         findings: list[str] = []
         ranked_route_findings: list[tuple[int, list[str]]] = []
@@ -521,6 +596,9 @@ class TaskChatOrchestrator:
                 seed_ids=seed_ids,
                 seed_paths=seed_paths,
                 question_text=question_text,
+                question_type=question_type,
+                must_include_entities=must_include_entities,
+                preferred_evidence_kinds=preferred_evidence_kinds,
             )
             if edge_kind == "calls" and relevance < 3:
                 continue
@@ -660,10 +738,25 @@ class TaskChatOrchestrator:
         seed_ids: set[str],
         seed_paths: set[str],
         question_text: str,
+        question_type: str | None,
+        must_include_entities: list[str],
+        preferred_evidence_kinds: list[str],
     ) -> int:
         question_score = self._question_match_score(question_text=question_text, source_item=source_item, target_item=target_item)
-        if question_score:
-            return 4 + question_score
+        must_include_score = self._must_include_edge_score(
+            source_item=source_item,
+            target_item=target_item,
+            must_include_entities=must_include_entities,
+        )
+        evidence_score = self._preferred_evidence_edge_score(
+            edge_kind=edge_kind,
+            source_item=source_item,
+            target_item=target_item,
+            question_type=question_type,
+            preferred_evidence_kinds=preferred_evidence_kinds,
+        )
+        if question_score or must_include_score or evidence_score:
+            return 4 + question_score + must_include_score + evidence_score
         if edge_kind == "calls":
             if source_id in seed_ids:
                 return 3
@@ -677,6 +770,67 @@ class TaskChatOrchestrator:
         if source_item.path in seed_paths or target_item.path in seed_paths:
             return 2
         return 1
+
+    def _must_include_edge_score(
+        self,
+        *,
+        source_item: EvidenceItem,
+        target_item: EvidenceItem,
+        must_include_entities: list[str],
+    ) -> int:
+        if not must_include_entities:
+            return 0
+        text = " ".join(
+            part.lower()
+            for part in (
+                source_item.title,
+                source_item.summary,
+                source_item.path,
+                target_item.title,
+                target_item.summary,
+                target_item.path,
+            )
+            if part
+        )
+        score = 0
+        for entity in must_include_entities:
+            normalized = str(entity or "").strip().lower()
+            if len(normalized) < 2:
+                continue
+            if normalized in text:
+                score += 3
+        return score
+
+    def _preferred_evidence_edge_score(
+        self,
+        *,
+        edge_kind: str,
+        source_item: EvidenceItem,
+        target_item: EvidenceItem,
+        question_type: str | None,
+        preferred_evidence_kinds: list[str],
+    ) -> int:
+        evidence_kinds = {str(kind or "").strip().lower() for kind in preferred_evidence_kinds if str(kind or "").strip()}
+        score = 0
+        combined_text = " ".join(
+            part.lower()
+            for part in (
+                source_item.title,
+                source_item.summary,
+                target_item.title,
+                target_item.summary,
+            )
+            if part
+        )
+        if "call_chain" in evidence_kinds and edge_kind == "calls":
+            score += 2
+        if "route_fact" in evidence_kinds and edge_kind == "routes_to":
+            score += 2
+        if "state_assignment_fact" in evidence_kinds and (
+            question_type == "init_state_explanation" or "app.state" in combined_text or "create_app" in combined_text
+        ):
+            score += 2
+        return score
 
     def _scope_history_for_question(self, *, question: str, history: list) -> list:
         if not history:
@@ -787,10 +941,26 @@ class TaskChatOrchestrator:
             return EvidencePack.model_validate(result)
         return EvidencePack(question=question, planning_source=planning_source)
 
-    async def _compose_answer(self, *, question: str, evidence_pack: EvidencePack, history: list) -> dict[str, Any]:
-        result = await self._maybe_await(
-            self._answer_composer.compose(question=question, evidence_pack=evidence_pack, history=history)
-        )
+    async def _compose_answer(
+        self,
+        *,
+        question: str,
+        evidence_pack: EvidencePack,
+        history: list,
+        validation_feedback: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        compose = self._answer_composer.compose
+        parameters = inspect.signature(compose).parameters
+        kwargs = {
+            "question": question,
+            "evidence_pack": evidence_pack,
+            "history": history,
+        }
+        if "validation_feedback" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ):
+            kwargs["validation_feedback"] = validation_feedback or {}
+        result = await self._maybe_await(compose(**kwargs))
         payload = dict(result or {})
         answer_source = str(payload.get("answer_source") or "local")
         if answer_source not in {"llm", "local"}:
@@ -801,6 +971,55 @@ class TaskChatOrchestrator:
             "confidence": str(payload.get("confidence") or "medium"),
             "answer_source": answer_source,
         }
+
+    async def _compose_and_validate_answer(
+        self,
+        *,
+        question: str,
+        evidence_pack: EvidencePack,
+        history: list,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        draft = await self._compose_answer(question=question, evidence_pack=evidence_pack, history=history)
+        validation = await self._validate_answer(
+            question=question,
+            answer=draft["answer"],
+            supplemental_notes=draft["supplemental_notes"],
+            evidence_pack=evidence_pack,
+        )
+        initial_validation = dict(validation)
+        retry_attempted = False
+        retry_succeeded = False
+        answer_attempts = 1
+        if validation.get("retryable") and not validation.get("passed"):
+            retry_attempted = True
+            answer_attempts = 2
+            retry_feedback = {
+                "issues": list(validation.get("issues") or []),
+                "confidence_override": validation.get("confidence_override"),
+                "must_include_entities": list(getattr(evidence_pack, "must_include_entities", []) or []),
+                "preferred_evidence_kinds": list(getattr(evidence_pack, "preferred_evidence_kinds", []) or []),
+                "evidence_gaps": list(getattr(evidence_pack, "gaps", []) or []),
+            }
+            draft = await self._compose_answer(
+                question=question,
+                evidence_pack=evidence_pack,
+                history=history,
+                validation_feedback=retry_feedback,
+            )
+            validation = await self._validate_answer(
+                question=question,
+                answer=draft["answer"],
+                supplemental_notes=draft["supplemental_notes"],
+                evidence_pack=evidence_pack,
+            )
+            retry_succeeded = bool(validation.get("passed"))
+        debug_meta = {
+            "validation_issues": list(initial_validation.get("issues") or validation.get("issues") or []),
+            "retry_attempted": retry_attempted,
+            "retry_succeeded": retry_succeeded,
+            "answer_attempts": answer_attempts,
+        }
+        return draft, validation, debug_meta
 
     def _normalize_tool_arguments(self, plan: PlannerResult) -> dict[str, object]:
         if plan.tool_call is None:
@@ -869,15 +1088,42 @@ class TaskChatOrchestrator:
             )
         return evidence
 
-    def _build_answer_debug(self, evidence_pack: EvidencePack) -> AnswerDebug | None:
+    def _build_answer_debug(self, evidence_pack: EvidencePack, debug_meta: dict[str, Any] | None = None) -> AnswerDebug | None:
         confirmed_facts = [item.strip() for item in evidence_pack.key_findings if item and item.strip()]
         evidence_gaps = [item.strip() for item in evidence_pack.gaps if item and item.strip()]
-        if not confirmed_facts and not evidence_gaps:
+        validation_issues = [item.strip() for item in list((debug_meta or {}).get("validation_issues") or []) if item and item.strip()]
+        retry_attempted = bool((debug_meta or {}).get("retry_attempted"))
+        retry_succeeded = bool((debug_meta or {}).get("retry_succeeded"))
+        answer_attempts = int((debug_meta or {}).get("answer_attempts") or 1)
+        related_node_ids = self._build_related_node_ids(evidence_pack)
+        if not confirmed_facts and not evidence_gaps and not validation_issues and not retry_attempted and not related_node_ids:
             return None
         return AnswerDebug(
             confirmed_facts=confirmed_facts[:5],
             evidence_gaps=evidence_gaps[:5],
+            validation_issues=validation_issues[:5],
+            retry_attempted=retry_attempted,
+            retry_succeeded=retry_succeeded,
+            answer_attempts=max(1, answer_attempts),
+            related_node_ids=related_node_ids[:12],
         )
+
+    def _build_related_node_ids(self, evidence_pack: EvidencePack) -> list[str]:
+        related: list[str] = []
+        for item in (
+            evidence_pack.call_chains
+            + evidence_pack.routes
+            + evidence_pack.symbols
+            + evidence_pack.entrypoints
+            + evidence_pack.files
+            + evidence_pack.citations
+        ):
+            for node_id in list(getattr(item, "node_ids", []) or []):
+                normalized = str(node_id or "").strip()
+                if not normalized or normalized in related:
+                    continue
+                related.append(normalized)
+        return related
 
     def _graph_kind(self, kind: str) -> str:
         if kind in {"entrypoint", "call_chain", "edge", "symbol"}:

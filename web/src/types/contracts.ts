@@ -66,6 +66,41 @@ export interface TaskGraphEvidence {
   path?: string | null
 }
 
+export type TaskGraphView = 'repository' | 'symbol' | 'module'
+
+export interface TaskGraphNodePayload {
+  node_id: string
+  kind: 'file' | 'symbol'
+  label: string
+  path?: string | null
+  summary?: string | null
+  language?: string | null
+  file_kind?: string | null
+  symbol_kind?: string | null
+  qualified_name?: string | null
+  parent_node_id?: string | null
+  start_line?: number | null
+  end_line?: number | null
+  is_focus: boolean
+}
+
+export interface TaskGraphEdgePayload {
+  from_node_id: string
+  to_node_id: string
+  kind: string
+  path?: string | null
+  line?: number | null
+  confidence?: number | null
+}
+
+export interface TaskGraphPayload {
+  task_id: string
+  view: TaskGraphView
+  focus_node_id?: string | null
+  nodes: TaskGraphNodePayload[]
+  edges: TaskGraphEdgePayload[]
+}
+
 export interface PlannerMetadata {
   planning_source: string
   loop_count: number
@@ -81,6 +116,11 @@ export interface PlannerMetadata {
 export interface AnswerDebug {
   confirmed_facts: string[]
   evidence_gaps: string[]
+  validation_issues: string[]
+  retry_attempted: boolean
+  retry_succeeded: boolean
+  answer_attempts: number
+  related_node_ids: string[]
 }
 
 export interface TaskChatMessage {
@@ -359,6 +399,52 @@ function isTaskGraphEvidence(value: unknown): value is TaskGraphEvidence {
   )
 }
 
+function isTaskGraphView(value: unknown): value is TaskGraphView {
+  return value === 'repository' || value === 'symbol' || value === 'module'
+}
+
+function isTaskGraphNodePayload(value: unknown): value is TaskGraphNodePayload {
+  return (
+    isRecord(value) &&
+    typeof value.node_id === 'string' &&
+    (value.kind === 'file' || value.kind === 'symbol') &&
+    typeof value.label === 'string' &&
+    (value.path === undefined || isNullableString(value.path)) &&
+    (value.summary === undefined || isNullableString(value.summary)) &&
+    (value.language === undefined || isNullableString(value.language)) &&
+    (value.file_kind === undefined || isNullableString(value.file_kind)) &&
+    (value.symbol_kind === undefined || isNullableString(value.symbol_kind)) &&
+    (value.qualified_name === undefined || isNullableString(value.qualified_name)) &&
+    (value.parent_node_id === undefined || isNullableString(value.parent_node_id)) &&
+    (value.start_line === undefined || value.start_line === null || isNumber(value.start_line)) &&
+    (value.end_line === undefined || value.end_line === null || isNumber(value.end_line)) &&
+    typeof value.is_focus === 'boolean'
+  )
+}
+
+function isTaskGraphEdgePayload(value: unknown): value is TaskGraphEdgePayload {
+  return (
+    isRecord(value) &&
+    typeof value.from_node_id === 'string' &&
+    typeof value.to_node_id === 'string' &&
+    typeof value.kind === 'string' &&
+    (value.path === undefined || isNullableString(value.path)) &&
+    (value.line === undefined || value.line === null || isNumber(value.line)) &&
+    (value.confidence === undefined || value.confidence === null || isNumber(value.confidence))
+  )
+}
+
+export function isTaskGraphPayload(value: unknown): value is TaskGraphPayload {
+  return (
+    isRecord(value) &&
+    typeof value.task_id === 'string' &&
+    isTaskGraphView(value.view) &&
+    (value.focus_node_id === undefined || isNullableString(value.focus_node_id)) &&
+    isRecordArray(value.nodes, isTaskGraphNodePayload) &&
+    isRecordArray(value.edges, isTaskGraphEdgePayload)
+  )
+}
+
 function isPlannerMetadata(value: unknown): value is PlannerMetadata {
   return (
     isRecord(value) &&
@@ -378,7 +464,12 @@ function isAnswerDebug(value: unknown): value is AnswerDebug {
   return (
     isRecord(value) &&
     isStringArray(value.confirmed_facts) &&
-    isStringArray(value.evidence_gaps)
+    isStringArray(value.evidence_gaps) &&
+    isStringArray(value.validation_issues) &&
+    typeof value.retry_attempted === 'boolean' &&
+    typeof value.retry_succeeded === 'boolean' &&
+    isNumber(value.answer_attempts) &&
+    isStringArray(value.related_node_ids)
   )
 }
 

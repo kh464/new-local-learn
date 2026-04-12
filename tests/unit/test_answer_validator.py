@@ -84,3 +84,45 @@ async def test_answer_validator_requires_evidence_disclosure_when_evidence_is_mi
 
     assert result["passed"] is False
     assert "missing_evidence_disclosure" in result["issues"]
+
+
+@pytest.mark.asyncio
+async def test_answer_validator_requires_must_include_entities_when_evidence_exists():
+    validator = AnswerValidator()
+
+    result = await validator.validate(
+        question="说明任务提交后的主链路",
+        answer="当前主链路会进入任务队列的 submit 方法。",
+        supplemental_notes=[],
+        evidence_pack={
+            "question": "说明任务提交后的主链路",
+            "planning_source": "hybrid_rag",
+            "question_type": "architecture_explanation",
+            "retrieval_objective": "定位任务提交入口及下游主调用链",
+            "must_include_entities": ["enqueue_turn_task"],
+            "preferred_evidence_kinds": ["call_chain", "symbol"],
+            "call_chains": [
+                {
+                    "kind": "call_chain",
+                    "path": "app/main.py",
+                    "title": "app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit",
+                    "summary": "主任务提交入口调用任务入队。",
+                }
+            ],
+            "symbols": [
+                {
+                    "kind": "symbol",
+                    "path": "app/main.py",
+                    "title": "app.main.create_app.enqueue_turn_task",
+                    "summary": "主任务提交入口。",
+                }
+            ],
+            "key_findings": ["已确认主链路涉及 enqueue_turn_task。"],
+            "citations": [],
+            "gaps": [],
+            "confidence_basis": ["已命中主调用链。"],
+        },
+    )
+
+    assert result["passed"] is False
+    assert "missing_must_include_entity" in result["issues"]

@@ -8,6 +8,10 @@ def _build_evidence_pack() -> EvidencePack:
     return EvidencePack(
         question="前端请求如何到后端？",
         planning_source="llm",
+        question_type="frontend_backend_flow",
+        retrieval_objective="定位前端请求入口与后端处理链路",
+        must_include_entities=["GET /health", "app/main.py"],
+        preferred_evidence_kinds=["call_chain", "route_fact"],
         call_chains=[
             EvidenceItem(
                 kind="call_chain",
@@ -63,6 +67,8 @@ async def test_answer_composer_uses_llm_when_client_available():
     assert "confirmed_facts" in captured["user_prompt"]
     assert "inferences" in captured["user_prompt"]
     assert "evidence_gaps" in captured["user_prompt"]
+    assert "answer_focus" in captured["user_prompt"]
+    assert "must_include_entities" in captured["user_prompt"]
 
 
 @pytest.mark.asyncio
@@ -146,3 +152,39 @@ async def test_answer_composer_local_fallback_uses_route_evidence_when_available
     assert "GET /health" in result["answer"]
     assert "app/main.py" in result["answer"]
     assert "app.main.create_app.health" in "".join(result["supplemental_notes"])
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_local_fallback_prioritizes_must_include_call_chain():
+    composer = AnswerComposer()
+
+    result = await composer.compose(
+        question="说明任务提交后的主链路",
+        evidence_pack=EvidencePack(
+            question="说明任务提交后的主链路",
+            planning_source="hybrid_rag",
+            question_type="architecture_explanation",
+            retrieval_objective="定位任务提交入口及下游主调用链",
+            must_include_entities=["enqueue_turn_task"],
+            preferred_evidence_kinds=["call_chain", "symbol"],
+            call_chains=[
+                EvidenceItem(
+                    kind="call_chain",
+                    path="app/a_side.py",
+                    title="app.a_side.requeue -> app.task_queue.InMemoryTaskQueue.submit",
+                    summary="旁支重试逻辑调用任务入队。",
+                ),
+                EvidenceItem(
+                    kind="call_chain",
+                    path="app/main.py",
+                    title="app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit",
+                    summary="主任务提交入口调用任务入队。",
+                ),
+            ],
+            key_findings=["已确认主链路涉及 enqueue_turn_task。"],
+        ),
+        history=[],
+    )
+
+    assert result["answer_source"] == "local"
+    assert "app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit" in result["answer"]

@@ -43,33 +43,35 @@ describe('TaskChatPanel', () => {
         {
           message_id: 'assistant-history-1',
           role: 'assistant',
-          content: '页面入口是 web/src/main.ts，组件挂载链是 web/src/App.vue -> web/src/components/TaskList.vue，前端入口函数是 web/src/components/TaskList.vue:loadTasks，由 click 交互触发。',
+          content:
+            'frontend request starts from web/src/main.ts and eventually reaches app/api/routes/tasks.py:list_tasks',
           citations: [
             {
               path: 'web/src/components/TaskList.vue',
               start_line: 12,
               end_line: 28,
-              reason: '这里定义了前端点击后触发的 loadTasks。',
-              snippet: '<button @click="loadTasks">刷新</button>',
+              reason: 'loadTasks is triggered here',
+              snippet: '<button @click="loadTasks">Refresh</button>',
             },
             {
               path: 'app/api/routes/tasks.py',
               start_line: 1,
               end_line: 8,
-              reason: '这里定义了后端处理路由。',
+              reason: 'backend route definition',
               snippet: '@router.get("/tasks")',
             },
           ],
           graph_evidence: [
             {
               kind: 'entrypoint',
-              label: 'backend入口: app/main.py',
-              detail: '语言: python',
+              label: 'backend entrypoint: app/main.py',
+              detail: 'language: python',
               path: 'app/main.py',
             },
             {
               kind: 'call_chain',
-              label: 'web/src/main.ts -> web/src/App.vue -> web/src/components/TaskList.vue:loadTasks [click] -> GET /api/v1/tasks -> app/api/routes/tasks.py:list_tasks',
+              label:
+                'web/src/main.ts -> web/src/App.vue -> web/src/components/TaskList.vue:loadTasks [click] -> GET /api/v1/tasks -> app/api/routes/tasks.py:list_tasks',
               detail: 'GET /api/v1/tasks',
               path: 'app/api/routes/tasks.py',
             },
@@ -90,10 +92,19 @@ describe('TaskChatPanel', () => {
             fallback_used: false,
             search_queries: [],
           },
+          answer_debug: {
+            confirmed_facts: [],
+            evidence_gaps: [],
+            validation_issues: [],
+            retry_attempted: false,
+            retry_succeeded: false,
+            answer_attempts: 1,
+            related_node_ids: ['function:python:app/api/routes/tasks.py:list_tasks'],
+          },
           created_at: '2026-04-08T10:00:00Z',
         },
       ],
-    })
+    } as any)
   })
 
   it('shows building state without requesting chat history while knowledge is still building', async () => {
@@ -181,21 +192,21 @@ describe('TaskChatPanel', () => {
       assistant_message: {
         message_id: 'assistant-1',
         role: 'assistant',
-        content: '前端会在 web/App.tsx 里通过 fetch 调用 /health，然后进入 app/main.py。',
+        content: 'frontend calls /health from web/App.tsx and reaches app/main.py',
         citations: [
           {
             path: 'web/App.tsx',
             start_line: 1,
             end_line: 5,
-            reason: '这里直接发起了 fetch 请求。',
+            reason: 'fetch is called here',
             snippet: "fetch('/health')",
           },
         ],
         graph_evidence: [
           {
             kind: 'entrypoint',
-            label: 'frontend入口: web/App.tsx',
-            detail: '语言: typescript',
+            label: 'frontend entrypoint: web/App.tsx',
+            detail: 'language: typescript',
             path: 'web/App.tsx',
           },
           {
@@ -205,7 +216,7 @@ describe('TaskChatPanel', () => {
             path: 'app/main.py',
           },
         ],
-        supplemental_notes: ['如果你要继续追调用链，可以再看 app/main.py。'],
+        supplemental_notes: ['continue tracing app/main.py for the next hop'],
         confidence: 'high',
         answer_source: 'local',
         planner_metadata: {
@@ -215,9 +226,18 @@ describe('TaskChatPanel', () => {
           fallback_used: true,
           search_queries: [],
         },
+        answer_debug: {
+          confirmed_facts: [],
+          evidence_gaps: [],
+          validation_issues: [],
+          retry_attempted: false,
+          retry_succeeded: false,
+          answer_attempts: 1,
+          related_node_ids: ['function:python:app/main.py:health'],
+        },
         created_at: '2026-04-08T10:01:01Z',
       },
-    })
+    } as any)
 
     const wrapper = mount(TaskChatPanel, {
       props: {
@@ -232,9 +252,79 @@ describe('TaskChatPanel', () => {
     await flushPromises()
 
     expect(submitTaskQuestionMock).toHaveBeenCalledWith('task-chat-1', '前端请求如何到后端？')
-    expect(wrapper.text()).toContain('前端会在 web/App.tsx 里通过 fetch 调用 /health，然后进入 app/main.py。')
-    expect(wrapper.text()).toContain('如果你要继续追调用链，可以再看 app/main.py。')
+    expect(wrapper.text()).toContain('frontend calls /health from web/App.tsx and reaches app/main.py')
+    expect(wrapper.text()).toContain('continue tracing app/main.py for the next hop')
     expect(wrapper.text()).toContain('本地知识库')
     expect(wrapper.text()).toContain('规则规划')
+  })
+
+  it('highlights assistant answers related to the selected graph node ids', async () => {
+    fetchTaskChatMessagesMock.mockResolvedValue({
+      task_id: 'task-chat-1',
+      messages: [
+        {
+          message_id: 'assistant-related',
+          role: 'assistant',
+          content: 'health route reaches app.main.health',
+          citations: [],
+          graph_evidence: [],
+          supplemental_notes: [],
+          confidence: 'high',
+          answer_source: 'llm',
+          answer_debug: {
+            confirmed_facts: [],
+            evidence_gaps: [],
+            validation_issues: [],
+            retry_attempted: false,
+            retry_succeeded: false,
+            answer_attempts: 1,
+            related_node_ids: ['function:python:app/main.py:app.main.health'],
+          },
+          planner_metadata: null,
+          created_at: '2026-04-08T10:02:00Z',
+        },
+        {
+          message_id: 'assistant-unrelated',
+          role: 'assistant',
+          content: 'this answer is unrelated to the selected node',
+          citations: [],
+          graph_evidence: [],
+          supplemental_notes: [],
+          confidence: 'medium',
+          answer_source: 'local',
+          answer_debug: {
+            confirmed_facts: [],
+            evidence_gaps: [],
+            validation_issues: [],
+            retry_attempted: false,
+            retry_succeeded: false,
+            answer_attempts: 1,
+            related_node_ids: ['file:web/src/App.vue'],
+          },
+          planner_metadata: null,
+          created_at: '2026-04-08T10:02:01Z',
+        },
+      ],
+    } as any)
+
+    const wrapper = mount(TaskChatPanel, {
+      props: {
+        taskId: 'task-chat-1',
+        status: createStatus(),
+        selectedNodeIds: ['function:python:app/main.py:app.main.health'],
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前图谱定位')
+    expect(wrapper.text()).toContain('function:python:app/main.py:app.main.health')
+    expect(wrapper.text()).toContain('已关联 1 条回答')
+    expect(wrapper.get('[data-testid="chat-message-assistant-related"]').classes()).toContain(
+      'task-chat__message--linked',
+    )
+    expect(wrapper.get('[data-testid="chat-message-assistant-unrelated"]').classes()).not.toContain(
+      'task-chat__message--linked',
+    )
   })
 })

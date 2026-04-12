@@ -30,7 +30,13 @@ class EvidenceAssembler:
                 summary = chain["summary"] if isinstance(chain, dict) else str(chain)
                 path = str(chain.get("backend_file") or chain.get("frontend_file") or "") if isinstance(chain, dict) else ""
                 call_chains.append(
-                    EvidenceItem(kind="call_chain", title=summary, summary=summary, path=path)
+                    EvidenceItem(
+                        kind="call_chain",
+                        title=summary,
+                        summary=summary,
+                        path=path,
+                        node_ids=[f"file:{path}"] if path else [],
+                    )
                 )
                 key_findings.append(f"已确认调用链：{summary}")
 
@@ -43,7 +49,13 @@ class EvidenceAssembler:
                     path = str(item.get("file_path") or "")
                     detail = f"语言: {item.get('language')}" if item.get("language") else ""
                     entrypoints.append(
-                        EvidenceItem(kind="entrypoint", title=title, summary=detail, path=path)
+                        EvidenceItem(
+                            kind="entrypoint",
+                            title=title,
+                            summary=detail,
+                            path=path,
+                            node_ids=[f"file:{path}"] if path else [],
+                        )
                     )
 
             for hit in payload.get("hits", []):
@@ -60,14 +72,29 @@ class EvidenceAssembler:
                         start_line=hit.get("start_line"),
                         end_line=hit.get("end_line"),
                         snippet=str(hit.get("snippet") or ""),
+                        node_ids=[f"file:{path}"] if path else [],
                     )
                 )
                 if path:
-                    files.append(EvidenceItem(kind="file", title=path, summary=summary, path=path))
+                    files.append(
+                        EvidenceItem(
+                            kind="file",
+                            title=path,
+                            summary=summary,
+                            path=path,
+                            node_ids=[f"file:{path}"],
+                        )
+                    )
                 symbol_name = str(hit.get("symbol_name") or hit.get("symbol") or "").strip()
                 if symbol_name:
                     symbols.append(
-                        EvidenceItem(kind="symbol", title=symbol_name, summary=summary, path=path)
+                        EvidenceItem(
+                            kind="symbol",
+                            title=symbol_name,
+                            summary=summary,
+                            path=path,
+                            node_ids=[f"file:{path}"] if path else [],
+                        )
                     )
 
             for route in payload.get("routes", []):
@@ -77,7 +104,13 @@ class EvidenceAssembler:
                 route_path = str(route.get("path") or route.get("route_path") or "")
                 title = f"{method} {route_path}".strip()
                 routes.append(
-                    EvidenceItem(kind="route", title=title, summary=str(route.get("summary") or title), path=str(route.get("source_file") or ""))
+                    EvidenceItem(
+                        kind="route",
+                        title=title,
+                        summary=str(route.get("summary") or title),
+                        path=str(route.get("source_file") or ""),
+                        node_ids=[f"file:{str(route.get('source_file') or '')}"] if route.get("source_file") else [],
+                    )
                 )
 
             confidence_basis.append(f"命中工具结果：{observation.tool_name}")

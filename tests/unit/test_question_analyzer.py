@@ -230,3 +230,58 @@ async def test_question_analyzer_llm_unknown_falls_back_to_rule_classification()
     assert result.question_type == "api_inventory"
     assert "/health" in result.search_queries or "health" in result.search_queries
     assert "health_fact" in result.preferred_evidence_kinds
+
+
+@pytest.mark.asyncio
+async def test_question_analyzer_uses_planning_context_hints_to_stabilize_knowledge_queries():
+    analyzer = QuestionAnalyzer()
+
+    result = await analyzer.analyze(
+        question="这个仓库是否具有知识库能力？",
+        history=[],
+        planning_context={
+            "file_hints": [
+                {
+                    "path": "app/services/knowledge/retriever.py",
+                    "summary_zh": "负责仓库知识库检索与证据组装。",
+                    "entry_role": None,
+                }
+            ],
+            "symbol_hints": [
+                {
+                    "qualified_name": "app.services.knowledge.retriever.KnowledgeRetriever",
+                    "file_path": "app/services/knowledge/retriever.py",
+                    "summary_zh": "知识库检索器，负责聚合代码证据。",
+                    "symbol_kind": "class",
+                }
+            ],
+        },
+    )
+
+    assert "app/services/knowledge/retriever.py" in result.search_queries
+    assert "app.services.knowledge.retriever.KnowledgeRetriever" in result.search_queries
+
+
+@pytest.mark.asyncio
+async def test_question_analyzer_uses_relation_hints_to_anchor_architecture_queries():
+    analyzer = QuestionAnalyzer()
+
+    result = await analyzer.analyze(
+        question="用户提交分析任务后主链路是什么？",
+        history=[],
+        planning_context={
+            "keyword_hints": ["任务队列", "提交任务"],
+            "relation_hints": [
+                {
+                    "edge_kind": "calls",
+                    "from_qualified_name": "app.main.create_app.enqueue_turn_task",
+                    "to_qualified_name": "app.task_queue.InMemoryTaskQueue.submit",
+                    "source_path": "app/main.py",
+                }
+            ],
+        },
+    )
+
+    assert "app.main.create_app.enqueue_turn_task" in result.search_queries
+    assert "app.task_queue.InMemoryTaskQueue.submit" in result.search_queries
+    assert "任务队列" in result.search_queries

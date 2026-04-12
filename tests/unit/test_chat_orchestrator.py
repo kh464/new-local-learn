@@ -192,6 +192,55 @@ class _PassValidator:
         }
 
 
+class _RetryAwareComposer:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def compose(self, *, question, evidence_pack, history, validation_feedback=None):
+        self.calls.append(
+            {
+                "question": question,
+                "validation_feedback": dict(validation_feedback or {}),
+            }
+        )
+        if len(self.calls) == 1:
+            return {
+                "answer": "当前主链路会进入任务队列的 submit 方法。",
+                "supplemental_notes": [],
+                "confidence": "medium",
+                "answer_source": "local",
+            }
+        return {
+            "answer": "主链路是 app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit。",
+            "supplemental_notes": ["已按校验反馈补充主入口实体。"],
+            "confidence": "high",
+            "answer_source": "llm",
+        }
+
+
+class _RetryingValidator:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def validate(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if len(self.calls) == 1:
+            return {
+                "passed": False,
+                "issues": ["missing_must_include_entity"],
+                "retryable": True,
+                "should_expand_context": False,
+                "confidence_override": "low",
+            }
+        return {
+            "passed": True,
+            "issues": [],
+            "retryable": False,
+            "should_expand_context": False,
+            "confidence_override": None,
+        }
+
+
 class _HybridQuestionAnalyzer:
     async def analyze(self, *, question, history):
         return QuestionAnalysis(
@@ -259,6 +308,22 @@ class _HybridRanker:
     def rank(self, *, exact_hits, semantic_hits, limit, **kwargs):
         del kwargs
         return exact_hits[:1]
+
+
+class _RecordingHybridRanker:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def rank(self, *, exact_hits, semantic_hits, limit, **kwargs):
+        self.calls.append(
+            {
+                "exact_hits": list(exact_hits),
+                "semantic_hits": list(semantic_hits),
+                "limit": limit,
+                **kwargs,
+            }
+        )
+        return list(exact_hits)[:1]
 
 
 class _HybridGraphExpander:
@@ -546,6 +611,41 @@ async def test_orchestrator_uses_composer_answer_source_when_llm_answer_is_gener
     )
 
     assert response.answer_source == "llm"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_retries_answer_generation_when_validation_is_retryable():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+
+    composer = _RetryAwareComposer()
+    validator = _RetryingValidator()
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=_DonePlanner(),
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=composer,
+        answer_validator=validator,
+    )
+
+    response = await orchestrator.answer_question(
+        task_id="task-retry-answer",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="说明任务提交后的主链路",
+        history=[],
+    )
+
+    assert len(composer.calls) == 2
+    assert composer.calls[1]["validation_feedback"]["issues"] == ["missing_must_include_entity"]
+    assert len(validator.calls) == 2
+    assert response.answer_source == "llm"
+    assert response.answer_debug is not None
+    assert response.answer_debug.validation_issues == ["missing_must_include_entity"]
+    assert response.answer_debug.retry_attempted is True
+    assert response.answer_debug.retry_succeeded is True
+    assert response.answer_debug.answer_attempts == 2
+    assert "app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit" in response.answer
 
 
 @pytest.mark.asyncio
@@ -1097,6 +1197,92 @@ def test_orchestrator_prioritizes_primary_calls_over_side_branches():
     )
 
 
+def test_orchestrator_prioritizes_must_include_entities_in_call_chain_evidence():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+    from app.services.code_graph.evidence_builder import EvidencePack as GraphEvidencePack
+    from app.services.code_graph.models import RetrievalCandidate
+
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=None,
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=None,
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+    )
+
+    graph_pack = GraphEvidencePack(
+        question="说明任务提交后的主链路",
+        normalized_question="说明任务提交后的主调用链",
+        retrieval_objective="定位任务提交入口及下游调用链",
+        seeds=[
+            RetrievalCandidate(
+                task_id="task-hybrid",
+                item_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                item_type="symbol",
+                path="app/task_queue.py",
+                symbol_id="method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                qualified_name="app.task_queue.InMemoryTaskQueue.submit",
+                score=120.0,
+                source="exact",
+                summary_zh="任务入队方法",
+            ),
+        ],
+        graph_nodes=[
+            {"kind": "file", "path": "app/task_queue.py", "summary_zh": "任务队列文件"},
+            {
+                "kind": "function",
+                "path": "app/a_side.py",
+                "qualified_name": "app.a_side.requeue",
+                "summary_zh": "旁支重试逻辑",
+                "start_line": 10,
+                "end_line": 18,
+            },
+            {
+                "kind": "function",
+                "path": "app/main.py",
+                "qualified_name": "app.main.create_app.enqueue_turn_task",
+                "summary_zh": "主任务提交入口",
+                "start_line": 449,
+                "end_line": 470,
+            },
+            {
+                "kind": "method",
+                "path": "app/task_queue.py",
+                "qualified_name": "app.task_queue.InMemoryTaskQueue.submit",
+                "summary_zh": "任务入队方法",
+                "start_line": 56,
+                "end_line": 90,
+            },
+        ],
+        graph_edges=[
+            {
+                "kind": "calls",
+                "from": "function:python:app/a_side.py:app.a_side.requeue",
+                "to": "method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                "path": "app/a_side.py",
+                "line": 15,
+            },
+            {
+                "kind": "calls",
+                "from": "function:python:app/main.py:app.main.create_app.enqueue_turn_task",
+                "to": "method:python:app/task_queue.py:app.task_queue.InMemoryTaskQueue.submit",
+                "path": "app/main.py",
+                "line": 459,
+            },
+        ],
+        summaries=[],
+    )
+
+    evidence_pack = orchestrator._convert_graph_evidence(
+        graph_pack,
+        must_include_entities=["enqueue_turn_task"],
+        preferred_evidence_kinds=["call_chain", "symbol"],
+    )
+
+    assert evidence_pack.call_chains[0].title == "app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit"
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_exposes_hybrid_planner_metadata_fields():
     from app.services.chat.orchestrator import TaskChatOrchestrator
@@ -1148,3 +1334,237 @@ async def test_orchestrator_exposes_hybrid_planner_metadata_fields():
     assert response.planner_metadata.search_queries == ["create_app", "app.state"]
     assert response.planner_metadata.must_include_entities == ["create_app"]
     assert response.planner_metadata.preferred_evidence_kinds == ["state_assignment_fact", "symbol"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_structured_planning_constraints_into_hybrid_ranker():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+
+    class _MetadataQuestionAnalyzer:
+        async def analyze(self, *, question, history):
+            del question, history
+            return QuestionAnalysis(
+                normalized_question="create_app 初始化时 app.state 挂载了哪些对象",
+                question_type="init_state_explanation",
+                answer_depth="detailed",
+                retrieval_objective="定位 create_app 中 app.state 的挂载项",
+                target_entities=["create_app", "app.state"],
+                preferred_item_types=["symbol", "file"],
+                search_queries=["create_app", "app.state"],
+                raw_keywords=["app.state", "create_app"],
+                must_include_entities=["create_app", "app.state"],
+                preferred_evidence_kinds=["state_assignment_fact", "symbol"],
+            )
+
+    ranker = _RecordingHybridRanker()
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=_DonePlanner(),
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+        question_analyzer=_MetadataQuestionAnalyzer(),
+        exact_retriever=_HybridExactRetriever(),
+        semantic_retriever=None,
+        hybrid_ranker=ranker,
+        graph_expander=_HybridGraphExpander(),
+        code_locator=_HybridCodeLocator(),
+        graph_evidence_builder=_HybridEvidenceBuilder(),
+    )
+
+    await orchestrator.answer_question(
+        task_id="task-hybrid-ranker-meta",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="create_app 初始化时挂载了哪些核心对象到 app.state？",
+        history=[],
+    )
+
+    assert ranker.calls
+    assert ranker.calls[0]["question_type"] == "init_state_explanation"
+    assert ranker.calls[0]["search_queries"] == ["create_app", "app.state"]
+    assert ranker.calls[0]["must_include_entities"] == ["create_app", "app.state"]
+    assert ranker.calls[0]["preferred_evidence_kinds"] == ["state_assignment_fact", "symbol"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_structured_planning_constraints_into_graph_expander():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+
+    class _MetadataQuestionAnalyzer:
+        async def analyze(self, *, question, history):
+            del question, history
+            return QuestionAnalysis(
+                normalized_question="create_app 初始化时 app.state 挂载了哪些对象",
+                question_type="init_state_explanation",
+                answer_depth="detailed",
+                retrieval_objective="定位 create_app 中 app.state 的挂载项",
+                target_entities=["create_app", "app.state"],
+                preferred_item_types=["symbol", "file"],
+                search_queries=["create_app", "app.state"],
+                raw_keywords=["app.state", "create_app"],
+                must_include_entities=["create_app", "app.state"],
+                preferred_evidence_kinds=["state_assignment_fact", "symbol"],
+            )
+
+    expander = _RecordingGraphExpander()
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=_DonePlanner(),
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+        question_analyzer=_MetadataQuestionAnalyzer(),
+        exact_retriever=_HybridExactRetriever(),
+        semantic_retriever=None,
+        hybrid_ranker=_HybridRanker(),
+        graph_expander=expander,
+        code_locator=_HybridCodeLocator(),
+        graph_evidence_builder=_HybridEvidenceBuilder(),
+    )
+
+    await orchestrator.answer_question(
+        task_id="task-hybrid-expander-meta",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="create_app 初始化时挂载了哪些核心对象到 app.state？",
+        history=[],
+    )
+
+    assert expander.calls
+    assert expander.calls[0]["must_include_entities"] == ["create_app", "app.state"]
+    assert expander.calls[0]["preferred_evidence_kinds"] == ["state_assignment_fact", "symbol"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_planning_context_hints_into_question_analyzer():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+
+    class _PlanningContextQuestionAnalyzer:
+        def __init__(self) -> None:
+            self.received = None
+
+        async def analyze(self, *, question, history, planning_context=None):
+            self.received = planning_context
+            return QuestionAnalysis(
+                normalized_question=question,
+                question_type="capability_check",
+                answer_depth="detailed",
+                retrieval_objective=question,
+                target_entities=[],
+                preferred_item_types=["symbol", "file"],
+                search_queries=["KnowledgeRetriever"],
+            )
+
+    class _PlanningContextRetriever(_HybridExactRetriever):
+        def build_planning_context(self, *, task_id, question, limit=6):
+            del task_id, question, limit
+            return {
+                "file_hints": [
+                    {
+                        "path": "app/services/knowledge/retriever.py",
+                        "summary_zh": "负责仓库知识库检索与证据组装。",
+                    }
+                ],
+                "symbol_hints": [
+                    {
+                        "qualified_name": "app.services.knowledge.retriever.KnowledgeRetriever",
+                        "file_path": "app/services/knowledge/retriever.py",
+                        "summary_zh": "知识库检索器，负责聚合代码证据。",
+                    }
+                ],
+            }
+
+    analyzer = _PlanningContextQuestionAnalyzer()
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=_DonePlanner(),
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+        question_analyzer=analyzer,
+        exact_retriever=_PlanningContextRetriever(),
+        semantic_retriever=None,
+        hybrid_ranker=_HybridRanker(),
+        graph_expander=_HybridGraphExpander(),
+        code_locator=_HybridCodeLocator(),
+        graph_evidence_builder=_HybridEvidenceBuilder(),
+    )
+
+    await orchestrator.answer_question(
+        task_id="task-plan-ctx",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="这个仓库是否具有知识库能力？",
+        history=[],
+    )
+
+    assert analyzer.received is not None
+    assert analyzer.received["file_hints"][0]["path"] == "app/services/knowledge/retriever.py"
+    assert (
+        analyzer.received["symbol_hints"][0]["qualified_name"]
+        == "app.services.knowledge.retriever.KnowledgeRetriever"
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_planning_context_hints_into_planning_agent():
+    from app.services.chat.orchestrator import TaskChatOrchestrator
+    from app.services.chat.models import PlannerResult
+
+    class _PlanningContextAwarePlanner:
+        def __init__(self) -> None:
+            self.received = None
+
+        async def plan(self, **kwargs):
+            self.received = kwargs.get("planning_context")
+            return PlannerResult(
+                inferred_intent="确认知识库能力",
+                answer_depth="detailed",
+                current_hypothesis="已有足够证据",
+                normalized_question="确认知识库能力",
+                retrieval_objective="定位知识库实现",
+                search_queries=["KnowledgeRetriever"],
+                gaps=[],
+                ready_to_answer=True,
+                tool_call=None,
+            )
+
+    class _PlanningContextRetriever(_HybridExactRetriever):
+        def build_planning_context(self, *, task_id, question, limit=6):
+            del task_id, question, limit
+            return {
+                "file_hints": [{"path": "app/services/knowledge/retriever.py", "summary_zh": "负责仓库知识库检索。"}],
+                "symbol_hints": [
+                    {
+                        "qualified_name": "app.services.knowledge.retriever.KnowledgeRetriever",
+                        "file_path": "app/services/knowledge/retriever.py",
+                        "summary_zh": "知识库检索器。",
+                    }
+                ],
+            }
+
+    planner = _PlanningContextAwarePlanner()
+    orchestrator = TaskChatOrchestrator(
+        planning_agent=planner,
+        fallback_planner=None,
+        mcp_gateway=None,
+        evidence_assembler=_StubAssembler(),
+        answer_composer=_StubComposer(),
+        answer_validator=_PassValidator(),
+        exact_retriever=_PlanningContextRetriever(),
+    )
+
+    await orchestrator.answer_question(
+        task_id="task-legacy-plan-ctx",
+        db_path="tmp.db",
+        repo_map_path=None,
+        question="这个仓库是否具有知识库能力？",
+        history=[],
+    )
+
+    assert planner.received is not None
+    assert planner.received["file_hints"][0]["path"] == "app/services/knowledge/retriever.py"
