@@ -60,6 +60,10 @@ describe('TaskChatPanel planner metadata', () => {
             used_tools: ['load_repo_map'],
             fallback_used: true,
             search_queries: ['知识库', 'knowledge', 'retriever'],
+            question_type: 'capability_check',
+            retrieval_objective: '确认仓库是否实现知识库能力并定位核心实现',
+            must_include_entities: ['KnowledgeRetriever', 'repo_map'],
+            preferred_evidence_kinds: ['capability_fact', 'symbol'],
           },
           created_at: '2026-04-09T10:00:01Z',
         },
@@ -80,6 +84,10 @@ describe('TaskChatPanel planner metadata', () => {
     expect(wrapper.text()).toContain('知识库')
     expect(wrapper.text()).toContain('knowledge')
     expect(wrapper.text()).toContain('retriever')
+    expect(wrapper.text()).toContain('确认仓库是否实现知识库能力并定位核心实现')
+    expect(wrapper.text()).toContain('KnowledgeRetriever')
+    expect(wrapper.text()).toContain('repo_map')
+    expect(wrapper.text()).toContain('capability_fact')
     expect(wrapper.text()).toContain('已确认命中 KnowledgeRetriever')
     expect(wrapper.text()).toContain('尚未定位向量检索入口')
   })

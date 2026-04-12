@@ -49,7 +49,7 @@ describe('TaskChatPanel', () => {
               path: 'web/src/components/TaskList.vue',
               start_line: 12,
               end_line: 28,
-              reason: '这里定义了前端点击后触发的 loadTasks。', 
+              reason: '这里定义了前端点击后触发的 loadTasks。',
               snippet: '<button @click="loadTasks">刷新</button>',
             },
             {
@@ -160,7 +160,6 @@ describe('TaskChatPanel', () => {
     expect(wrapper.text()).toContain('click')
     expect(wrapper.text()).toContain('GET /api/v1/tasks')
     expect(wrapper.text()).toContain('app/api/routes/tasks.py:list_tasks')
-    expect(wrapper.text()).not.toContain('代码证据')
     expect(wrapper.text()).toContain('LLM')
     expect(wrapper.text()).toContain('LLM 规划')
   })

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { fetchTaskChatMessages, submitTaskQuestion } from '../services/api'
-import type { TaskChatMessage, TaskGraphEvidence, TaskStatus } from '../types/contracts'
+import type { PlannerMetadata, TaskChatMessage, TaskGraphEvidence, TaskStatus } from '../types/contracts'
 
 const props = defineProps<{
   taskId: string
@@ -41,27 +41,12 @@ type CallChainStep = {
   value: string
 }
 
+type PlannerDebugSection = {
+  title: string
+  values: string[]
+}
+
 const SOURCE_FILE_PATTERN = /[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx|vue)/g
-
-function formatAnswerSource(source?: 'llm' | 'local' | null): string {
-  if (source === 'llm') {
-    return '回答：大模型'
-  }
-  if (source === 'local') {
-    return '回答：本地'
-  }
-  return ''
-}
-
-function formatPlanningSource(source?: string | null): string {
-  if (source === 'llm') {
-    return '规划：大模型'
-  }
-  if (source === 'rule') {
-    return '规划：规则兜底'
-  }
-  return ''
-}
 
 function renderAnswerSource(source?: 'llm' | 'local' | null): string {
   if (source === 'llm') {
@@ -80,15 +65,84 @@ function renderPlanningSource(source?: string | null): string {
   if (source === 'rule') {
     return '规则规划'
   }
-  return ''
+  if (source === 'hybrid_rag') {
+    return '混合检索规划'
+  }
+  return source ?? ''
+}
+
+function renderQuestionType(questionType?: string | null): string {
+  switch (questionType) {
+    case 'capability_check':
+      return '能力确认'
+    case 'architecture_explanation':
+      return '架构讲解'
+    case 'call_chain_trace':
+      return '调用链追踪'
+    case 'module_responsibility':
+      return '模块职责'
+    case 'code_walkthrough':
+      return '代码走读'
+    case 'config_analysis':
+      return '配置分析'
+    case 'init_state_explanation':
+      return '初始化状态讲解'
+    case 'frontend_backend_flow':
+      return '前后端流程'
+    case 'api_inventory':
+      return '接口清单'
+    case 'entrypoint_lookup':
+      return '入口定位'
+    case 'symbol_explanation':
+      return '符号讲解'
+    default:
+      return questionType ?? ''
+  }
 }
 
 function hasPlannerDebug(message: TaskChatMessage): boolean {
   return Boolean(
     message.planner_metadata?.search_queries?.length ||
+      message.planner_metadata?.question_type ||
+      message.planner_metadata?.retrieval_objective ||
+      message.planner_metadata?.must_include_entities?.length ||
+      message.planner_metadata?.preferred_evidence_kinds?.length ||
       message.answer_debug?.confirmed_facts?.length ||
       message.answer_debug?.evidence_gaps?.length,
   )
+}
+
+function buildPlannerSections(metadata?: PlannerMetadata | null): PlannerDebugSection[] {
+  if (!metadata) {
+    return []
+  }
+
+  const sections: PlannerDebugSection[] = []
+  if (metadata.question_type) {
+    sections.push({
+      title: '问题类型',
+      values: [renderQuestionType(metadata.question_type)],
+    })
+  }
+  if (metadata.retrieval_objective) {
+    sections.push({
+      title: '检索目标',
+      values: [metadata.retrieval_objective],
+    })
+  }
+  if (metadata.must_include_entities?.length) {
+    sections.push({
+      title: '必含实体',
+      values: metadata.must_include_entities,
+    })
+  }
+  if (metadata.preferred_evidence_kinds?.length) {
+    sections.push({
+      title: '证据偏好',
+      values: metadata.preferred_evidence_kinds,
+    })
+  }
+  return sections
 }
 
 function groupGraphEvidence(graphEvidence?: TaskGraphEvidence[]) {
@@ -207,14 +261,6 @@ function toggleStepHighlight(messageId: string, step: CallChainStep, fallbackPat
   }
 }
 
-function isCitationHighlighted(messageId: string, citationPath: string): boolean {
-  const activePaths = activeCitationPathsByMessage.value[messageId] ?? []
-  if (!activePaths.length) {
-    return false
-  }
-  return activePaths.includes(citationPath)
-}
-
 function isStepSelected(messageId: string, step: CallChainStep, fallbackPath?: string | null): boolean {
   const activePaths = activeCitationPathsByMessage.value[messageId] ?? []
   const stepPaths = resolveStepCitationPaths(step, fallbackPath)
@@ -280,12 +326,12 @@ watch(
         <p class="task-chat__eyebrow">代码问答</p>
         <h3>继续追问仓库实现</h3>
       </div>
-      <p class="task-chat__hint">回答会优先依据仓库认知图与真实代码理解，展示调用链和文件位置。</p>
+      <p class="task-chat__hint">回答会优先依据仓库认知图与真实代码证据，展示调用链和文件位置。</p>
     </div>
 
     <div v-if="isKnowledgeBuilding" class="task-chat__state task-chat__state--building">
       <strong>知识库构建中</strong>
-      <p>系统正在整理仓库认知图，完成后会自动开放问答。</p>
+      <p>系统正在整理仓库认知图谱，完成后会自动开放问答。</p>
     </div>
 
     <div v-else-if="isKnowledgeFailed" class="task-chat__state task-chat__state--failed">
@@ -328,15 +374,36 @@ watch(
           v-if="message.role === 'assistant' && hasPlannerDebug(message)"
           class="task-chat__planner-debug"
         >
-          <h4>规划检索词</h4>
-          <div v-if="message.planner_metadata?.search_queries?.length" class="task-chat__planner-query-list">
-            <span
-              v-for="query in message.planner_metadata.search_queries"
-              :key="query"
-              class="task-chat__planner-query"
+          <h4>规划调试</h4>
+          <div class="task-chat__planner-meta">
+            <div
+              v-for="section in buildPlannerSections(message.planner_metadata)"
+              :key="section.title"
+              class="task-chat__planner-section"
             >
-              {{ query }}
-            </span>
+              <h5>{{ section.title }}</h5>
+              <div class="task-chat__planner-query-list">
+                <span
+                  v-for="value in section.values"
+                  :key="`${section.title}-${value}`"
+                  class="task-chat__planner-query task-chat__planner-query--soft"
+                >
+                  {{ value }}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div v-if="message.planner_metadata?.search_queries?.length" class="task-chat__planner-section">
+            <h5>检索词</h5>
+            <div class="task-chat__planner-query-list">
+              <span
+                v-for="query in message.planner_metadata.search_queries"
+                :key="query"
+                class="task-chat__planner-query"
+              >
+                {{ query }}
+              </span>
+            </div>
           </div>
           <div v-if="message.answer_debug?.confirmed_facts?.length" class="task-chat__planner-section">
             <h5>已确认事实</h5>
@@ -381,19 +448,20 @@ watch(
                 >
                   <h6 class="task-chat__chain-title">结构化链路</h6>
                   <div class="task-chat__chain-steps">
-                    <div
+                    <button
                       v-for="step in parseCallChain(evidence.label)"
                       :key="step.key"
-                      class="task-chat__chain-step"
+                      type="button"
+                      class="task-chat__chain-step-button"
+                      :class="{
+                        'task-chat__chain-step-button--active': isStepSelected(message.message_id, step, evidence.path),
+                      }"
+                      :data-testid="`chain-step-${step.key}`"
+                      @click="toggleStepHighlight(message.message_id, step, evidence.path)"
                     >
-                      <div
-                        class="task-chat__chain-step-button"
-                        :data-testid="`chain-step-${step.key}`"
-                      >
-                        <p class="task-chat__chain-step-title">{{ step.title }}</p>
-                        <p class="task-chat__chain-step-value">{{ step.value }}</p>
-                      </div>
-                    </div>
+                      <p class="task-chat__chain-step-title">{{ step.title }}</p>
+                      <p class="task-chat__chain-step-value">{{ step.value }}</p>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -443,9 +511,7 @@ watch(
 .task-chat__planner-debug,
 .task-chat__graph,
 .task-chat__graph-group,
-.task-chat__citations,
 .task-chat__notes,
-.task-chat__citation,
 .task-chat__composer {
   display: grid;
   gap: 8px;
@@ -462,9 +528,7 @@ watch(
 .task-chat__planner-section h5,
 .task-chat__graph h4,
 .task-chat__graph-item p,
-.task-chat__citation p,
 .task-chat__notes h4,
-.task-chat__citations h4,
 .task-chat__state p,
 .task-chat__state strong,
 .task-chat__graph-group-title {
@@ -480,8 +544,7 @@ watch(
 
 .task-chat__hint,
 .task-chat__status,
-.task-chat__graph-detail,
-.task-chat__citation-reason {
+.task-chat__graph-detail {
   color: var(--muted);
 }
 
@@ -582,6 +645,11 @@ watch(
   border: 1px solid rgba(15, 23, 42, 0.1);
 }
 
+.task-chat__planner-meta {
+  display: grid;
+  gap: 10px;
+}
+
 .task-chat__planner-query-list {
   display: flex;
   flex-wrap: wrap;
@@ -610,6 +678,10 @@ watch(
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   background: rgba(15, 23, 42, 0.08);
   color: var(--text);
+}
+
+.task-chat__planner-query--soft {
+  background: rgba(11, 110, 79, 0.08);
 }
 
 .task-chat__graph-group {
@@ -662,10 +734,6 @@ watch(
   gap: 8px;
 }
 
-.task-chat__chain-step {
-  display: block;
-}
-
 .task-chat__chain-step-button {
   display: grid;
   width: 100%;
@@ -699,29 +767,13 @@ watch(
   color: var(--text);
 }
 
-.task-chat__graph-label,
-.task-chat__citation-path {
+.task-chat__graph-label {
   font-weight: 600;
 }
 
 .task-chat__graph-path {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-}
-
-.task-chat__citation pre {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.08);
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.task-chat__citation--active {
-  border-color: rgba(59, 130, 246, 0.45);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.22);
-  background: rgba(59, 130, 246, 0.08);
 }
 
 .task-chat__composer textarea {

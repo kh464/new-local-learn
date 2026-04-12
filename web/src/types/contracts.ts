@@ -72,6 +72,10 @@ export interface PlannerMetadata {
   used_tools: string[]
   fallback_used: boolean
   search_queries: string[]
+  question_type?: string | null
+  retrieval_objective?: string | null
+  must_include_entities?: string[]
+  preferred_evidence_kinds?: string[]
 }
 
 export interface AnswerDebug {
@@ -362,7 +366,11 @@ function isPlannerMetadata(value: unknown): value is PlannerMetadata {
     isNumber(value.loop_count) &&
     isStringArray(value.used_tools) &&
     typeof value.fallback_used === 'boolean' &&
-    isStringArray(value.search_queries)
+    isStringArray(value.search_queries) &&
+    (value.question_type === undefined || isNullableString(value.question_type)) &&
+    (value.retrieval_objective === undefined || isNullableString(value.retrieval_objective)) &&
+    (value.must_include_entities === undefined || isStringArray(value.must_include_entities)) &&
+    (value.preferred_evidence_kinds === undefined || isStringArray(value.preferred_evidence_kinds))
   )
 }
 
