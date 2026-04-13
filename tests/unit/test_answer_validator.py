@@ -126,3 +126,43 @@ async def test_answer_validator_requires_must_include_entities_when_evidence_exi
 
     assert result["passed"] is False
     assert "missing_must_include_entity" in result["issues"]
+
+
+@pytest.mark.asyncio
+async def test_answer_validator_allows_helm_templates_directory_derived_from_template_file_paths():
+    validator = AnswerValidator()
+
+    result = await validator.validate(
+        question="Helm Chart 模板放在哪个目录？",
+        answer="Helm Chart 模板目录在 ops/helm/learn-new/templates。",
+        supplemental_notes=[],
+        evidence_pack={
+            "question": "Helm Chart 模板放在哪个目录？",
+            "planning_source": "hybrid_rag",
+            "files": [
+                {
+                    "kind": "file",
+                    "path": "ops/helm/learn-new/templates/configmap.yaml",
+                    "title": "ops/helm/learn-new/templates/configmap.yaml",
+                    "summary": "Helm 模板文件",
+                }
+            ],
+            "citations": [
+                {
+                    "kind": "citation",
+                    "path": "ops/helm/learn-new/templates/configmap.yaml",
+                    "title": "ops/helm/learn-new/templates/configmap.yaml",
+                    "summary": "Helm 模板文件",
+                    "start_line": 1,
+                    "end_line": 5,
+                    "snippet": "apiVersion: v1\nkind: ConfigMap\n",
+                }
+            ],
+            "key_findings": ["已命中 Helm 模板文件。"],
+            "gaps": [],
+            "confidence_basis": ["命中了模板文件路径。"],
+        },
+    )
+
+    assert result["passed"] is True
+    assert result["issues"] == []

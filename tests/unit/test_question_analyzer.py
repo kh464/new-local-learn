@@ -79,6 +79,28 @@ async def test_question_analyzer_fallback_generates_stable_chinese_search_querie
 
 
 @pytest.mark.asyncio
+async def test_question_analyzer_stabilizes_knowledge_queries_across_equivalent_phrasings():
+    analyzer = QuestionAnalyzer()
+
+    result_a = await analyzer.analyze(
+        question="\u4ed3\u5e93\u9879\u76ee\u7684\u77e5\u8bc6\u5e93\u662f\u6784\u5efa\u7684\u5417\uff1f",
+        history=[],
+    )
+    result_b = await analyzer.analyze(
+        question="\u4ed3\u5e93\u662f\u5426\u5177\u6709\u77e5\u8bc6\u5e93\uff1f",
+        history=[],
+    )
+
+    assert result_a.question_type == "capability_check"
+    assert result_b.question_type == "capability_check"
+    assert "knowledge" in result_a.search_queries
+    assert "knowledge" in result_b.search_queries
+    assert "retriever" in result_a.search_queries
+    assert "retriever" in result_b.search_queries
+    assert result_a.search_queries[:4] == result_b.search_queries[:4]
+
+
+@pytest.mark.asyncio
 async def test_question_analyzer_preserves_structured_route_search_queries():
     analyzer = QuestionAnalyzer()
 
@@ -216,6 +238,62 @@ async def test_question_analyzer_classifies_health_inventory_question_as_api_inv
     assert "\u5065\u5eb7\u68c0\u67e5" in result.raw_keywords
     assert "health_fact" in result.preferred_evidence_kinds
     assert any(query in result.search_queries for query in ["\u5065\u5eb7\u68c0\u67e5", "/health", "health"])
+
+
+@pytest.mark.asyncio
+async def test_question_analyzer_anchors_docker_compose_questions_to_compose_file():
+    analyzer = QuestionAnalyzer()
+
+    result = await analyzer.analyze(
+        question="docker compose \u4f1a\u542f\u52a8\u54ea\u4e9b\u670d\u52a1\uff1f",
+        history=[],
+    )
+
+    assert result.question_type == "config_analysis"
+    assert "docker-compose.yml" in result.search_queries
+    assert "services" in result.search_queries
+
+
+@pytest.mark.asyncio
+async def test_question_analyzer_anchors_helm_questions_to_helm_templates_directory():
+    analyzer = QuestionAnalyzer()
+
+    result = await analyzer.analyze(
+        question="Helm Chart \u6a21\u677f\u653e\u5728\u54ea\u4e2a\u76ee\u5f55\uff1f",
+        history=[],
+    )
+
+    assert result.question_type == "config_analysis"
+    assert "ops/helm" in result.search_queries
+    assert "templates" in result.search_queries
+
+
+@pytest.mark.asyncio
+async def test_question_analyzer_classifies_frontend_entry_inventory_question_as_entrypoint_lookup():
+    analyzer = QuestionAnalyzer()
+
+    result = await analyzer.analyze(
+        question="\u524d\u7aef\u4e00\u5171\u6709\u51e0\u4e2a\u9875\u9762\u5165\u53e3\uff1f\u5206\u522b\u662f\u4ec0\u4e48\uff1f",
+        history=[],
+    )
+
+    assert result.question_type == "entrypoint_lookup"
+    assert "frontend/src/user-main.js" in result.search_queries
+    assert "frontend/src/admin-main.js" in result.search_queries
+
+
+@pytest.mark.asyncio
+async def test_question_analyzer_classifies_vue_entry_component_question_as_entrypoint_lookup():
+    analyzer = QuestionAnalyzer()
+
+    result = await analyzer.analyze(
+        question="\u7528\u6237\u4fa7\u4e3b\u754c\u9762\u7684 Vue \u5165\u53e3\u7ec4\u4ef6\u5728\u54ea\u91cc\uff1f",
+        history=[],
+    )
+
+    assert result.question_type == "entrypoint_lookup"
+    assert "UserApp.vue" in result.search_queries
+    assert "frontend/src/user-main.js" in result.search_queries
 
 
 @pytest.mark.asyncio

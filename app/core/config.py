@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     llm_enabled: bool = True
     llm_config_path: Path = Field(default=Path("config/llm.yaml"))
     llm_profile: str | None = None
+    planning_llm_profile: str | None = None
     llm_max_prompt_chars: int = 20000
     llm_max_snippet_chars: int = 1200
     vector_store_enabled: bool = False
@@ -88,6 +89,14 @@ class Settings(BaseSettings):
     @field_validator("llm_profile", mode="before")
     @classmethod
     def _normalize_llm_profile(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+    @field_validator("planning_llm_profile", mode="before")
+    @classmethod
+    def _normalize_planning_llm_profile(cls, value):
         if isinstance(value, str):
             normalized = value.strip()
             return normalized or None

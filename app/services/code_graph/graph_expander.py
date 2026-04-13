@@ -116,7 +116,18 @@ class GraphExpander:
         for seed in seeds:
             if seed.path:
                 collected_paths.add(seed.path)
-        collected_files = [files_by_path[path] for path in sorted(collected_paths) if path in files_by_path]
+        collected_files: list[CodeFileNode] = []
+        for path in sorted(collected_paths):
+            file_node = files_by_path.get(path)
+            if file_node is None:
+                file_node = CodeFileNode(
+                    task_id=task_id,
+                    path=path,
+                    language=self._infer_language_from_path(path),
+                    file_kind="source",
+                    summary_zh="",
+                )
+            collected_files.append(file_node)
 
         dedup_edges: list[CodeEdge] = []
         seen_edges: set[tuple[str, str, str, str, int | None]] = set()
@@ -133,6 +144,22 @@ class GraphExpander:
             symbols=sorted(collected_symbols, key=lambda item: (item.file_path, item.start_line, item.qualified_name)),
             edges=dedup_edges,
         )
+
+    def _infer_language_from_path(self, path: str) -> str:
+        lowered = path.lower()
+        if lowered.endswith(".py"):
+            return "python"
+        if lowered.endswith(".js"):
+            return "javascript"
+        if lowered.endswith(".ts"):
+            return "typescript"
+        if lowered.endswith(".vue"):
+            return "vue"
+        if lowered.endswith(".yaml") or lowered.endswith(".yml"):
+            return "yaml"
+        if lowered.endswith(".json"):
+            return "json"
+        return "text"
 
     def _enqueue_symbol(self, *, queue: list[tuple[int, float, str]], symbol_id: str, hop: int, priority: float) -> None:
         queue.append((hop, priority, symbol_id))

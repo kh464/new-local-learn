@@ -5,7 +5,9 @@ import re
 from dataclasses import dataclass, field
 
 
-_SYSTEM_PROMPT = """你是仓库问答系统的问题分析器。你的职责不是直接回答问题，而是把用户问题稳定归一化，输出后续检索需要的结构化结果。
+_SYSTEM_PROMPT = """你是仓库问答系统的规划前问题分析器。
+你的职责不是直接回答用户，而是把用户问题稳定归一化，输出后续检索需要的结构化结果。
+
 你必须严格输出 JSON，对象字段只允许包含：
 - normalized_question: string
 - question_type: string
@@ -24,9 +26,11 @@ _SYSTEM_PROMPT = """你是仓库问答系统的问题分析器。你的职责不
 约束：
 1. 所有自然语言内容必须使用简体中文，代码标识符和文件路径保持原样。
 2. 不要直接回答用户问题。
-3. search_queries 必须稳定、可检索、偏向短语级关键词，优先输出文件路径、类名、方法名、接口名、配置名、中文功能词。
-4. 对语义相近但表达不同的问题，要尽量输出一致的 search_queries。
-5. 不要输出 Markdown，不要输出解释性文字，只返回 JSON。"""
+3. search_queries 必须稳定、可检索、偏向短语级关键词，优先输出目录、文件、类名、函数名、接口名、配置名。
+4. 对语义相同但表达不同的问题，要尽量输出一致的 normalized_question 与 search_queries。
+5. 如果问题属于前端、部署、docker compose、Helm、知识库、向量检索、Qdrant 等专题，优先锚定对应目录和文件，不要默认回落到 app/main.py。
+6. 如果 planning_context 提供了 file_hints、symbol_hints、relation_hints、keyword_hints，优先利用这些线索稳定 question_type、search_queries、must_include_entities、preferred_evidence_kinds。
+7. 不要输出 Markdown，不要输出解释性文字，只返回 JSON。"""
 
 _PATH_PATTERN = re.compile(r"[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx|vue|json|ya?ml|toml|md)")
 _DOTTED_SYMBOL_PATTERN = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b")
@@ -69,7 +73,6 @@ _CHINESE_STOPWORDS = (
     "哪些",
     "哪个",
     "什么",
-    "一下",
 )
 _QUESTION_TYPES = {
     "capability_check",
@@ -95,20 +98,34 @@ _TASK_FLOW_HINTS = (
 )
 _CALL_CHAIN_HINTS = ("调用链", "链路")
 _HEALTH_HINTS = ("健康检查", "health")
-_CAPABILITY_HINTS = ("是否", "有没有", "支持", "具备", "几种", "哪些")
+_CAPABILITY_HINTS = ("是否", "有没有", "有无", "支持", "具备", "几种", "哪些")
 _DOMAIN_KEYWORDS = (
     "知识库",
-    "认知图",
+    "knowledge",
+    "retriever",
     "repo_map",
+    "index",
+    "rag",
+    "向量",
+    "qdrant",
     "create_app",
     "app.state",
     "任务队列",
+    "queue",
+    "backend",
     "后端",
+    "frontend",
     "前端",
-    "实时",
-    "任务状态",
     "websocket",
     "轮询",
+    "实时",
+    "任务状态",
+    "docker",
+    "compose",
+    "docker-compose",
+    "helm",
+    "chart",
+    "templates",
     "健康检查",
     "health",
 )
@@ -250,7 +267,7 @@ class QuestionAnalyzer:
         target_entities = self._merge_unique(raw_files, raw_symbols, raw_routes)
         answer_depth = (
             "code_walkthrough"
-            if any(term in normalized_question for term in ("逐行", "逐步", "详细"))
+            if any(term in normalized_question for term in ("逐行", "逐步", "详细", "代码级别"))
             else "detailed"
         )
         must_include_entities = self._build_must_include_entities(
@@ -361,6 +378,8 @@ class QuestionAnalyzer:
             return "init_state_explanation"
         if self._looks_like_task_flow(question):
             return "architecture_explanation"
+        if self._is_deploy_or_config_question(question=question, raw_keywords=raw_keywords):
+            return "config_analysis"
         if raw_routes:
             return "call_chain_trace"
         if any(term in question for term in _CALL_CHAIN_HINTS) or "route" in lowered or "call" in lowered:
@@ -369,12 +388,12 @@ class QuestionAnalyzer:
             return "api_inventory"
         if self._is_frontend_backend_flow_question(question=question, raw_keywords=raw_keywords):
             return "frontend_backend_flow"
+        if self._is_frontend_entry_lookup_question(question):
+            return "entrypoint_lookup"
         if any(term in question for term in ("入口", "启动", "运行", "整体架构")):
             return "entrypoint_lookup"
         if any(term in question for term in ("逐行", "逐步", "详细解释")):
             return "code_walkthrough"
-        if any(term in question for term in ("配置", "部署", "环境变量", "docker", "qdrant")):
-            return "config_analysis"
         if self._is_capability_question(question=question, raw_keywords=raw_keywords):
             return "capability_check"
         if raw_files or raw_symbols or "职责" in question or "做什么" in question or "什么意思" in question:
@@ -412,8 +431,50 @@ class QuestionAnalyzer:
 
     def _is_capability_question(self, *, question: str, raw_keywords: list[str]) -> bool:
         keyword_text = " ".join(raw_keywords).lower()
-        return any(term in question for term in _CAPABILITY_HINTS) and any(
-            term in keyword_text for term in ("任务队列", "后端", "queue", "backend", "能力", "支持")
+        capability_domain_terms = (
+            "任务队列",
+            "queue",
+            "backend",
+            "后端",
+            "能力",
+            "支持",
+            "知识库",
+            "knowledge",
+            "retriever",
+            "index",
+            "rag",
+            "向量",
+        )
+        domain_hit = any(term in keyword_text for term in capability_domain_terms)
+        if not domain_hit:
+            return False
+        if any(term in question for term in _CAPABILITY_HINTS):
+            return True
+        return "吗" in question and any(term in keyword_text for term in ("知识库", "knowledge", "retriever", "rag"))
+
+    def _is_deploy_or_config_question(self, *, question: str, raw_keywords: list[str]) -> bool:
+        lowered = question.lower()
+        keyword_text = " ".join(raw_keywords).lower()
+        return any(
+            term in lowered or term in keyword_text
+            for term in (
+                "docker",
+                "compose",
+                "docker-compose",
+                "helm",
+                "chart",
+                "templates",
+                "部署",
+                "deployment",
+                "环境变量",
+                "qdrant",
+            )
+        )
+
+    def _is_frontend_entry_lookup_question(self, question: str) -> bool:
+        return any(
+            term in question
+            for term in ("页面入口", "入口组件", "Vue 入口", "Vue入口", "用户侧主界面", "管理端主界面")
         )
 
     def _looks_like_task_flow(self, question: str) -> bool:
@@ -427,15 +488,15 @@ class QuestionAnalyzer:
         if question_type == "call_chain_trace":
             return f"定位与“{question}”相关的入口、调用链和下游函数"
         if question_type == "config_analysis":
-            return f"定位与“{question}”相关的配置文件和初始化逻辑"
+            return f"定位与“{question}”相关的配置文件、目录和初始化逻辑"
         if question_type == "init_state_explanation":
             return f"定位“{question}”对应的初始化入口、app.state 挂载点与状态对象来源"
         if question_type == "frontend_backend_flow":
             return f"定位“{question}”对应的前端状态更新方式、请求入口与后端通知链路"
         if question_type == "api_inventory":
-            return f"定位“{question}”对应的健康检查接口、路由定义与处理函数"
+            return f"定位“{question}”对应的接口定义、路由与处理函数"
         if question_type == "entrypoint_lookup":
-            return f"定位“{question}”对应的应用入口、启动流程和主调度函数"
+            return f"定位“{question}”对应的入口文件、启动流程和主调度函数"
         if question_type == "symbol_explanation":
             return f"定位“{question}”最相关的符号定义并解释职责"
         return f"定位与“{question}”最相关的文件、类和方法并解释职责"
@@ -458,8 +519,9 @@ class QuestionAnalyzer:
 
     def _extract_keywords(self, question: str, *, raw_symbols: list[str], raw_files: list[str]) -> list[str]:
         candidates: list[str] = []
+        lowered = question.lower()
         for keyword in _DOMAIN_KEYWORDS:
-            if keyword.lower() in question.lower():
+            if keyword.lower() in lowered:
                 candidates.append(keyword)
         for phrase in _CHINESE_PHRASE_PATTERN.findall(question):
             cleaned = self._clean_chinese_phrase(phrase)
@@ -489,6 +551,7 @@ class QuestionAnalyzer:
         candidates: list[str] = []
         max_queries = 12 if self._looks_like_task_flow(question) else 10
 
+        candidates.extend(self._contextual_anchor_queries(question=question, raw_keywords=raw_keywords))
         candidates.extend(target_entities)
         candidates.extend(raw_routes)
         candidates.extend(raw_files)
@@ -502,6 +565,8 @@ class QuestionAnalyzer:
             candidates.extend(["create_app", "app.state", "state"])
         if question_type == "capability_check":
             candidates.extend(["任务队列", "task queue", "queue backend"])
+            if self._mentions_knowledge(question=question, raw_keywords=raw_keywords):
+                candidates.extend(["知识库", "knowledge", "retriever", "repo_map", "index", "rag"])
         if question_type == "frontend_backend_flow":
             candidates.extend(["前端", "任务状态", "websocket", "轮询"])
         if question_type == "api_inventory":
@@ -536,6 +601,28 @@ class QuestionAnalyzer:
             if len(deduped) >= max_queries:
                 break
         return deduped
+
+    def _contextual_anchor_queries(self, *, question: str, raw_keywords: list[str]) -> list[str]:
+        candidates: list[str] = []
+        lowered = question.lower()
+        keyword_text = " ".join(raw_keywords).lower()
+
+        if self._mentions_knowledge(question=question, raw_keywords=raw_keywords):
+            candidates.extend(["知识库", "knowledge", "retriever", "repo_map", "index", "rag"])
+        if "docker compose" in lowered or "docker-compose" in lowered or "compose" in keyword_text:
+            candidates.extend(["docker-compose.yml", "services", "app"])
+        if "helm" in lowered or "chart" in lowered or "templates" in lowered:
+            candidates.extend(["ops/helm", "templates", "Chart.yaml"])
+        if "qdrant" in lowered or "qdrant" in keyword_text:
+            candidates.extend(["qdrant", "QdrantKnowledgeIndex", "vector_store.py"])
+        if self._is_frontend_entry_lookup_question(question):
+            candidates.extend(["frontend/src/user-main.js", "frontend/src/admin-main.js", "UserApp.vue", "AdminApp.vue"])
+        return candidates
+
+    def _mentions_knowledge(self, *, question: str, raw_keywords: list[str]) -> bool:
+        lowered = question.lower()
+        keyword_text = " ".join(raw_keywords).lower()
+        return any(term in lowered or term in keyword_text for term in ("知识库", "knowledge", "retriever", "repo_map", "rag"))
 
     def _extract_route_queries(self, question: str) -> list[str]:
         route_paths = [match.group(0) for match in _ROUTE_PATH_PATTERN.finditer(question)]
@@ -590,6 +677,8 @@ class QuestionAnalyzer:
             return ["route_fact", "call_chain", "symbol"]
         if question_type == "architecture_explanation":
             return ["call_chain", "symbol", "file"]
+        if question_type == "config_analysis":
+            return ["file", "symbol"]
         return ["symbol", "file"]
 
     def _clean_chinese_phrase(self, phrase: str) -> str:

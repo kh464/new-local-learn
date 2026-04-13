@@ -171,6 +171,388 @@ def test_exact_retriever_uses_search_queries_for_direct_symbol_and_path_matches(
     assert any(hit.path == "app/tasks/jobs.py" for hit in hits)
 
 
+def test_exact_retriever_can_fallback_to_repo_files_when_graph_has_no_matching_file(tmp_path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "frontend" / "src").mkdir(parents=True)
+    (repo_root / "frontend" / "src" / "user-main.js").write_text(
+        "import { createApp } from 'vue'\n"
+        "import UserApp from './apps/user/UserApp.vue'\n"
+        "createApp(UserApp).mount('#app')\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+
+    retriever = ExactRetriever(
+        graph_store=graph_store,
+        chunk_retriever=_FakeChunkRetriever(),
+        repo_root=repo_root,
+    )
+    hits = retriever.retrieve(
+        task_id="task-1",
+        db_path=db_path,
+        question="用户侧主界面的 Vue 入口组件在哪里？",
+        normalized_question="定位用户侧前端入口文件与入口组件",
+        target_entities=[],
+        search_queries=["frontend/src/user-main.js", "UserApp.vue"],
+        limit=5,
+    )
+
+    assert hits
+    assert any(hit.path == "frontend/src/user-main.js" for hit in hits)
+
+
+def test_exact_retriever_keeps_explicit_docker_compose_file_in_top_hits_even_with_noisy_targets(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "docker-compose.yml").write_text(
+        "services:\n  app:\n    image: learn-new:local\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_files(
+        [
+            CodeFileNode(
+                task_id="task-1",
+                path="app/sandbox.py",
+                language="python",
+                file_kind="source",
+                summary_zh="Docker 沙箱实现。",
+            ),
+            CodeFileNode(
+                task_id="task-1",
+                path="app/runtime_health.py",
+                language="python",
+                file_kind="source",
+                summary_zh="运行时健康检查。",
+            ),
+            CodeFileNode(
+                task_id="task-1",
+                path="alembic/env.py",
+                language="python",
+                file_kind="source",
+                summary_zh="迁移入口。",
+            ),
+            CodeFileNode(
+                task_id="task-1",
+                path="alembic/versions/0001.py",
+                language="python",
+                file_kind="source",
+                summary_zh="迁移文件 1。",
+            ),
+            CodeFileNode(
+                task_id="task-1",
+                path="alembic/versions/0002.py",
+                language="python",
+                file_kind="source",
+                summary_zh="迁移文件 2。",
+            ),
+            CodeFileNode(
+                task_id="task-1",
+                path="alembic/versions/0003.py",
+                language="python",
+                file_kind="source",
+                summary_zh="迁移文件 3。",
+            ),
+        ]
+    )
+    graph_store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/agents/a.py:app.agents.A",
+                symbol_kind="class",
+                name="A",
+                qualified_name="app.agents.A",
+                file_path="app/agents/a.py",
+                start_line=1,
+                end_line=10,
+                summary_zh="无关符号 A。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/agents/b.py:app.agents.B",
+                symbol_kind="class",
+                name="B",
+                qualified_name="app.agents.B",
+                file_path="app/agents/b.py",
+                start_line=1,
+                end_line=10,
+                summary_zh="无关符号 B。",
+                language="python",
+            ),
+        ]
+    )
+
+    retriever = ExactRetriever(
+        graph_store=graph_store,
+        chunk_retriever=_FakeChunkRetriever(),
+        repo_root=repo_root,
+    )
+    hits = retriever.retrieve(
+        task_id="task-1",
+        db_path=db_path,
+        question="docker compose 会启动哪些服务？",
+        normalized_question="docker compose 部署配置",
+        target_entities=[
+            "app/sandbox.py",
+            "app/runtime_health.py",
+            "alembic/env.py",
+            "alembic/versions/0001.py",
+            "alembic/versions/0002.py",
+            "alembic/versions/0003.py",
+            "app.agents.A",
+            "app.agents.B",
+        ],
+        search_queries=["docker-compose.yml", "services", "app"],
+        limit=8,
+    )
+
+    assert hits
+    assert any(hit.path == "docker-compose.yml" for hit in hits)
+
+
+def test_exact_retriever_keeps_explicit_helm_templates_in_top_hits_even_with_symbol_noise(tmp_path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "ops" / "helm" / "learn-new" / "templates").mkdir(parents=True)
+    (repo_root / "ops" / "helm" / "learn-new" / "Chart.yaml").write_text("apiVersion: v2\n", encoding="utf-8")
+    (repo_root / "ops" / "helm" / "learn-new" / "templates" / "configmap.yaml").write_text(
+        "apiVersion: v1\nkind: ConfigMap\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.KnowledgeService",
+                symbol_kind="class",
+                name="KnowledgeService",
+                qualified_name="app.knowledge.KnowledgeService",
+                file_path="app/knowledge.py",
+                start_line=1,
+                end_line=80,
+                summary_zh="知识库服务。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/runtime_health.py:app.runtime_health.RuntimeHealthService",
+                symbol_kind="class",
+                name="RuntimeHealthService",
+                qualified_name="app.runtime_health.RuntimeHealthService",
+                file_path="app/runtime_health.py",
+                start_line=1,
+                end_line=80,
+                summary_zh="运行时健康服务。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.IndexBuilder",
+                symbol_kind="class",
+                name="IndexBuilder",
+                qualified_name="app.knowledge.IndexBuilder",
+                file_path="app/knowledge.py",
+                start_line=90,
+                end_line=160,
+                summary_zh="索引构建器。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.QdrantStore",
+                symbol_kind="class",
+                name="QdrantStore",
+                qualified_name="app.knowledge.QdrantStore",
+                file_path="app/knowledge.py",
+                start_line=170,
+                end_line=240,
+                summary_zh="向量库封装。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.SearchPlan",
+                symbol_kind="class",
+                name="SearchPlan",
+                qualified_name="app.knowledge.SearchPlan",
+                file_path="app/knowledge.py",
+                start_line=250,
+                end_line=320,
+                summary_zh="搜索计划。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.SearchResult",
+                symbol_kind="class",
+                name="SearchResult",
+                qualified_name="app.knowledge.SearchResult",
+                file_path="app/knowledge.py",
+                start_line=330,
+                end_line=380,
+                summary_zh="搜索结果。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.Retriever",
+                symbol_kind="class",
+                name="Retriever",
+                qualified_name="app.knowledge.Retriever",
+                file_path="app/knowledge.py",
+                start_line=390,
+                end_line=440,
+                summary_zh="检索器。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/knowledge.py:app.knowledge.RepositoryMap",
+                symbol_kind="class",
+                name="RepositoryMap",
+                qualified_name="app.knowledge.RepositoryMap",
+                file_path="app/knowledge.py",
+                start_line=450,
+                end_line=500,
+                summary_zh="仓库映射。",
+                language="python",
+            ),
+        ]
+    )
+
+    retriever = ExactRetriever(
+        graph_store=graph_store,
+        chunk_retriever=_FakeChunkRetriever(),
+        repo_root=repo_root,
+    )
+    hits = retriever.retrieve(
+        task_id="task-1",
+        db_path=db_path,
+        question="Helm Chart 模板放在哪个目录？",
+        normalized_question="确认 Helm Chart 模板目录",
+        target_entities=["KnowledgeService", "RuntimeHealthService"],
+        search_queries=["ops/helm", "templates", "Chart.yaml"],
+        limit=8,
+    )
+
+    assert hits
+    assert any(hit.path == "ops/helm/learn-new/templates/configmap.yaml" for hit in hits)
+
+
+def test_exact_retriever_prioritizes_docker_compose_files_for_docker_compose_questions(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "docker-compose.yml").write_text("services:\n  app:\n    image: demo\n", encoding="utf-8")
+    (repo_root / "Dockerfile").write_text("FROM python:3.11\n", encoding="utf-8")
+
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_files(
+        [
+            CodeFileNode(task_id="task-1", path="alembic/env.py", language="python", file_kind="source", summary_zh="迁移入口。"),
+            CodeFileNode(task_id="task-1", path="alembic/versions/0001.py", language="python", file_kind="source", summary_zh="迁移 1。"),
+            CodeFileNode(task_id="task-1", path="alembic/versions/0002.py", language="python", file_kind="source", summary_zh="迁移 2。"),
+            CodeFileNode(task_id="task-1", path="app/sandbox.py", language="python", file_kind="source", summary_zh="Docker 沙箱。"),
+            CodeFileNode(task_id="task-1", path="app/runtime_health.py", language="python", file_kind="source", summary_zh="运行时健康检查。"),
+        ]
+    )
+    graph_store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="class:python:app/sandbox.py:app.sandbox.DockerPythonSandbox",
+                symbol_kind="class",
+                name="DockerPythonSandbox",
+                qualified_name="app.sandbox.DockerPythonSandbox",
+                file_path="app/sandbox.py",
+                start_line=1,
+                end_line=20,
+                summary_zh="Docker 沙箱。",
+                language="python",
+            ),
+            CodeSymbolNode(
+                task_id="task-1",
+                symbol_id="function:python:app/runtime_health.py:app.runtime_health._probe_docker",
+                symbol_kind="function",
+                name="_probe_docker",
+                qualified_name="app.runtime_health._probe_docker",
+                file_path="app/runtime_health.py",
+                start_line=1,
+                end_line=20,
+                summary_zh="Docker 探针。",
+                language="python",
+            ),
+        ]
+    )
+
+    retriever = ExactRetriever(
+        graph_store=graph_store,
+        chunk_retriever=_FakeChunkRetriever(),
+        repo_root=repo_root,
+    )
+    hits = retriever.retrieve(
+        task_id="task-1",
+        db_path=db_path,
+        question="docker compose 会启动哪些服务？",
+        normalized_question="docker compose 部署配置",
+        target_entities=["Docker", "Docker Compose"],
+        search_queries=[
+            "docker-compose.yml",
+            "services",
+            "app",
+            "alembic/env.py",
+            "alembic/versions/0001.py",
+            "alembic/versions/0002.py",
+            "app/sandbox.py",
+            "app/runtime_health.py",
+            "Dockerfile",
+            "DockerPythonSandbox",
+            "_probe_docker",
+        ],
+        limit=8,
+    )
+
+    assert hits
+    assert any(hit.path == "docker-compose.yml" for hit in hits)
+
+
+def test_exact_retriever_build_planning_context_does_not_inject_generic_backend_hints_when_no_match(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_files(
+        [
+            CodeFileNode(
+                task_id="task-1",
+                path="app/main.py",
+                language="python",
+                file_kind="source",
+                summary_zh="后端入口文件。",
+                entry_role="backend_entry",
+            )
+        ]
+    )
+
+    retriever = ExactRetriever(graph_store=graph_store, chunk_retriever=_FakeChunkRetriever())
+    context = retriever.build_planning_context(task_id="task-1", question="用户侧主界面的 Vue 入口组件在哪里？", limit=6)
+
+    assert context["file_hints"] == []
+    assert context["symbol_hints"] == []
+    assert context["relation_hints"] == []
+
+
 @pytest.mark.asyncio
 async def test_semantic_retriever_returns_candidates_from_vector_hits():
     retriever = SemanticRetriever(

@@ -188,3 +188,179 @@ async def test_answer_composer_local_fallback_prioritizes_must_include_call_chai
 
     assert result["answer_source"] == "local"
     assert "app.main.create_app.enqueue_turn_task -> app.task_queue.InMemoryTaskQueue.submit" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_local_fallback_extracts_docker_compose_services_from_file_snippet():
+    composer = AnswerComposer()
+
+    result = await composer.compose(
+        question="docker compose 会启动哪些服务？",
+        evidence_pack=EvidencePack(
+            question="docker compose 会启动哪些服务？",
+            planning_source="hybrid_rag",
+            question_type="config_analysis",
+            retrieval_objective="确认 docker compose 服务定义",
+            files=[
+                EvidenceItem(
+                    kind="file",
+                    path="docker-compose.yml",
+                    title="docker-compose.yml",
+                    summary="Docker Compose 服务定义文件。",
+                )
+            ],
+            citations=[
+                EvidenceItem(
+                    kind="citation",
+                    path="docker-compose.yml",
+                    title="docker-compose.yml",
+                    summary="Docker Compose 服务定义文件。",
+                    start_line=1,
+                    end_line=10,
+                    snippet="services:\n  app:\n    image: learn-new:local\n    ports:\n      - \"8000:8000\"\n",
+                )
+            ],
+            key_findings=["已命中 docker-compose.yml 文件片段。"],
+        ),
+        history=[],
+    )
+
+    assert result["answer_source"] == "local"
+    assert "docker-compose.yml" in result["answer"]
+    assert "app" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_local_fallback_reports_helm_templates_directory_from_file_evidence():
+    composer = AnswerComposer()
+
+    result = await composer.compose(
+        question="Helm Chart 模板放在哪个目录？",
+        evidence_pack=EvidencePack(
+            question="Helm Chart 模板放在哪个目录？",
+            planning_source="hybrid_rag",
+            question_type="config_analysis",
+            retrieval_objective="确认 Helm Chart 模板目录",
+            files=[
+                EvidenceItem(
+                    kind="file",
+                    path="ops/helm/learn-new/templates/configmap.yaml",
+                    title="ops/helm/learn-new/templates/configmap.yaml",
+                    summary="Helm ConfigMap 模板。",
+                )
+            ],
+            citations=[
+                EvidenceItem(
+                    kind="citation",
+                    path="ops/helm/learn-new/templates/configmap.yaml",
+                    title="ops/helm/learn-new/templates/configmap.yaml",
+                    summary="Helm ConfigMap 模板。",
+                    start_line=1,
+                    end_line=5,
+                    snippet="apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sample\n",
+                )
+            ],
+            key_findings=["已命中 Helm 模板文件。"],
+        ),
+        history=[],
+    )
+
+    assert result["answer_source"] == "local"
+    assert "ops/helm/learn-new/templates" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_prefers_local_structured_answer_when_llm_is_overly_conservative():
+    class ConservativeClient:
+        async def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict[str, object]:
+            return {
+                "answer": "当前证据不足，我暂时不能确认 docker compose 会启动哪些服务。",
+                "supplemental_notes": ["还需要更多直接代码证据。"],
+                "confidence": "low",
+            }
+
+    composer = AnswerComposer(client=ConservativeClient())
+
+    result = await composer.compose(
+        question="docker compose 会启动哪些服务？",
+        evidence_pack=EvidencePack(
+            question="docker compose 会启动哪些服务？",
+            planning_source="hybrid_rag",
+            question_type="config_analysis",
+            retrieval_objective="确认 docker compose 服务定义",
+            files=[
+                EvidenceItem(
+                    kind="file",
+                    path="docker-compose.yml",
+                    title="docker-compose.yml",
+                    summary="Docker Compose 服务定义文件。",
+                )
+            ],
+            citations=[
+                EvidenceItem(
+                    kind="citation",
+                    path="docker-compose.yml",
+                    title="docker-compose.yml",
+                    summary="Docker Compose 服务定义文件。",
+                    start_line=1,
+                    end_line=10,
+                    snippet="services:\n  app:\n    image: learn-new:local\n",
+                )
+            ],
+            key_findings=["已命中 docker-compose.yml 文件片段。"],
+        ),
+        history=[],
+    )
+
+    assert result["answer_source"] == "local"
+    assert "docker-compose.yml" in result["answer"]
+    assert "app" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_prefers_local_structured_answer_on_retry_for_ungrounded_llm_output():
+    class UngroundedClient:
+        async def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict[str, object]:
+            return {
+                "answer": "docker compose 会启动 app 服务，并且还会暴露很多环境变量。",
+                "supplemental_notes": ["我还推断它依赖 Dockerfile。"],
+                "confidence": "medium",
+            }
+
+    composer = AnswerComposer(client=UngroundedClient())
+
+    result = await composer.compose(
+        question="docker compose 会启动哪些服务？",
+        evidence_pack=EvidencePack(
+            question="docker compose 会启动哪些服务？",
+            planning_source="hybrid_rag",
+            question_type="config_analysis",
+            retrieval_objective="确认 docker compose 服务定义",
+            files=[
+                EvidenceItem(
+                    kind="file",
+                    path="docker-compose.yml",
+                    title="docker-compose.yml",
+                    summary="Docker Compose 服务定义文件。",
+                )
+            ],
+            citations=[
+                EvidenceItem(
+                    kind="citation",
+                    path="docker-compose.yml",
+                    title="docker-compose.yml",
+                    summary="Docker Compose 服务定义文件。",
+                    start_line=1,
+                    end_line=10,
+                    snippet="services:\n  app:\n    image: learn-new:local\n",
+                )
+            ],
+            key_findings=["已命中 docker-compose.yml 文件片段。"],
+        ),
+        history=[],
+        validation_feedback={"issues": ["ungrounded_entity"]},
+    )
+
+    assert result["answer_source"] == "local"
+    assert "docker-compose.yml" in result["answer"]
+    assert "app" in result["answer"]

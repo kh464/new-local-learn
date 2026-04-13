@@ -125,6 +125,133 @@ def test_graph_expander_and_code_locator_build_local_subgraph_and_snippets(tmp_p
     assert evidence.snippets
 
 
+def test_graph_expander_and_code_locator_can_build_file_snippet_for_non_graph_file_seed(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    (repo_root / "docker-compose.yml").write_text(
+        "services:\n"
+        "  app:\n"
+        "    image: learn-new:local\n"
+        "    ports:\n"
+        "      - \"8000:8000\"\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+
+    seeds = [
+        RetrievalCandidate(
+            task_id="task-file-seed",
+            item_id="docker-compose.yml",
+            item_type="file",
+            path="docker-compose.yml",
+            symbol_id=None,
+            qualified_name=None,
+            score=145.0,
+            source="exact",
+            summary_zh="Docker Compose 服务定义文件。",
+        )
+    ]
+
+    subgraph = GraphExpander(graph_store=graph_store).expand(task_id="task-file-seed", seeds=seeds, max_hops=1, max_nodes=10)
+    snippets = CodeLocator(repo_root=repo_root).locate(subgraph=subgraph)
+    evidence = GraphEvidenceBuilder().build(
+        question="docker compose 会启动哪些服务？",
+        normalized_question="定位 docker-compose.yml 中定义的服务",
+        retrieval_objective="确认 docker compose 服务定义",
+        subgraph=subgraph,
+        snippets=snippets,
+    )
+
+    assert any(file.path == "docker-compose.yml" for file in subgraph.files)
+    assert snippets
+    assert snippets[0].path == "docker-compose.yml"
+    assert "services:" in snippets[0].snippet
+    assert evidence.snippets
+
+
+def test_code_locator_prioritizes_file_seed_snippet_before_unrelated_symbol_snippets(tmp_path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "app").mkdir(parents=True)
+    (repo_root / "docker-compose.yml").write_text(
+        "services:\n  app:\n    image: learn-new:local\n",
+        encoding="utf-8",
+    )
+    (repo_root / "app" / "main.py").write_text(
+        "def health():\n    return {'status': 'ok'}\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "knowledge.db"
+    graph_store = CodeGraphStore(db_path)
+    graph_store.initialize()
+    graph_store.upsert_files(
+        [
+            CodeFileNode(
+                task_id="task-priority",
+                path="app/main.py",
+                language="python",
+                file_kind="source",
+                summary_zh="后端入口文件。",
+                entry_role="backend_entry",
+            )
+        ]
+    )
+    graph_store.upsert_symbols(
+        [
+            CodeSymbolNode(
+                task_id="task-priority",
+                symbol_id="function:python:app/main.py:app.main.health",
+                symbol_kind="function",
+                name="health",
+                qualified_name="app.main.health",
+                file_path="app/main.py",
+                start_line=1,
+                end_line=2,
+                summary_zh="健康检查函数。",
+                language="python",
+            )
+        ]
+    )
+
+    subgraph = GraphExpander(graph_store=graph_store).expand(
+        task_id="task-priority",
+        seeds=[
+            RetrievalCandidate(
+                task_id="task-priority",
+                item_id="docker-compose.yml",
+                item_type="file",
+                path="docker-compose.yml",
+                symbol_id=None,
+                qualified_name=None,
+                score=145.0,
+                source="exact",
+                summary_zh="Docker Compose 服务定义文件。",
+            ),
+            RetrievalCandidate(
+                task_id="task-priority",
+                item_id="function:python:app/main.py:app.main.health",
+                item_type="symbol",
+                path="app/main.py",
+                symbol_id="function:python:app/main.py:app.main.health",
+                qualified_name="app.main.health",
+                score=120.0,
+                source="exact",
+                summary_zh="健康检查函数。",
+            ),
+        ],
+        max_hops=1,
+        max_nodes=10,
+    )
+    snippets = CodeLocator(repo_root=repo_root).locate(subgraph=subgraph)
+
+    assert snippets
+    assert snippets[0].path == "docker-compose.yml"
+    assert "services:" in snippets[0].snippet
+
+
 def test_graph_expander_bridges_unresolved_attribute_calls_into_matching_symbols(tmp_path):
     repo_root = tmp_path / "repo"
     (repo_root / "app").mkdir(parents=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from app.services.chat.models import EvidencePack
 
@@ -62,7 +63,22 @@ class AnswerValidator:
         ):
             for item in group:
                 texts.extend(filter(None, [item.path, item.title, item.summary, item.snippet]))
+        texts.extend(self._collect_derived_allowed_entities(pack))
         return {entity.lower() for entity in self._extract_code_entities("\n".join(texts))}
+
+    def _collect_derived_allowed_entities(self, pack: EvidencePack) -> list[str]:
+        derived: list[str] = []
+        for group in (pack.files, pack.citations):
+            for item in group:
+                path = str(getattr(item, "path", "") or "").replace("\\", "/").strip()
+                if not path:
+                    continue
+                parts = PurePosixPath(path).parts
+                if "templates" in parts:
+                    index = parts.index("templates")
+                    if index >= 1:
+                        derived.append("/".join(parts[: index + 1]))
+        return derived
 
     def _extract_code_entities(self, text: str) -> list[str]:
         return list(dict.fromkeys(match.group(0) for match in _CODE_ENTITY_PATTERN.finditer(text)))

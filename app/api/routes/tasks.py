@@ -82,11 +82,11 @@ def get_settings(request: Request) -> Settings:
     return settings
 
 
-def _build_llm_client(settings: Settings) -> ChatCompletionClient | None:
+def _build_llm_client(settings: Settings, profile_override: str | None = None) -> ChatCompletionClient | None:
     if not getattr(settings, "llm_enabled", False) or not settings.llm_config_path.is_file():
         return None
     try:
-        runtime_config = load_runtime_config(settings.llm_config_path, settings.llm_profile)
+        runtime_config = load_runtime_config(settings.llm_config_path, profile_override or settings.llm_profile)
     except Exception:
         return None
     return ChatCompletionClient(runtime_config)
@@ -125,7 +125,11 @@ async def _build_task_chat_orchestrator(
         question_analyzer = (
             QuestionAnalyzer(llm_client=planning_client) if planning_client is not None else QuestionAnalyzer()
         )
-        exact_retriever = ExactRetriever(graph_store=graph_store, chunk_retriever=KnowledgeRetriever())
+        exact_retriever = ExactRetriever(
+            graph_store=graph_store,
+            chunk_retriever=KnowledgeRetriever(),
+            repo_root=repo_root,
+        )
         hybrid_ranker = HybridRanker()
         graph_expander = GraphExpander(graph_store=graph_store)
         code_locator = CodeLocator(repo_root=repo_root)
@@ -180,9 +184,10 @@ def get_knowledge_chat_service(request: Request) -> KnowledgeChatService:
 
     settings = get_settings(request)
     task_store = get_task_store(request)
-    planning_client = _build_llm_client(settings)
+    answer_client = _build_llm_client(settings)
+    planning_client = _build_llm_client(settings, settings.planning_llm_profile) or answer_client
     evidence_assembler = EvidenceAssembler()
-    answer_composer = AnswerComposer(client=planning_client)
+    answer_composer = AnswerComposer(client=answer_client)
     answer_validator = AnswerValidator()
 
     async def orchestrator_factory(**kwargs):

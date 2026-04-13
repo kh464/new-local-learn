@@ -46,6 +46,56 @@ llm:
     assert runtime_config.provider.generation.max_tokens == 700
 
 
+def test_build_llm_client_uses_explicit_profile_override(tmp_path):
+    config_path = tmp_path / "llm.yaml"
+    config_path.write_text(
+        """
+version: 1
+llm:
+  default_provider: demo
+  default_profile: chat
+  timeout_seconds: 45
+  max_retries: 3
+  providers:
+    demo:
+      enabled: true
+      base_url: https://example.test/v1
+      api_key: secret-token
+      generation:
+        temperature: 0.2
+        top_p: 0.8
+        max_tokens: 700
+  routing:
+    profiles:
+      chat:
+        provider: demo
+        model: demo-chat-model
+      planner:
+        provider: demo
+        model: demo-planner-model
+""".strip(),
+        encoding="utf-8",
+    )
+
+    from app.api.routes.tasks import _build_llm_client
+    from app.core.config import Settings
+
+    settings = Settings(
+        llm_enabled=True,
+        llm_config_path=config_path,
+        llm_profile="chat",
+        planning_llm_profile="planner",
+    )
+
+    answer_client = _build_llm_client(settings)
+    planning_client = _build_llm_client(settings, profile_override=settings.planning_llm_profile)
+
+    assert answer_client is not None
+    assert planning_client is not None
+    assert answer_client._runtime_config.profile.model == "demo-chat-model"
+    assert planning_client._runtime_config.profile.model == "demo-planner-model"
+
+
 def test_tutor_composer_returns_chinese_guidance():
     from app.services.analyzers.tutor_composer import TutorComposer
 

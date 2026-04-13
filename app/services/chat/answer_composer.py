@@ -2,23 +2,33 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from pathlib import PurePosixPath
 
 from pydantic import BaseModel, Field
 
 from app.services.chat.models import EvidencePack
 
 _LOGGER = logging.getLogger("app.answer_composer")
+_INSUFFICIENT_EVIDENCE_MARKERS = (
+    "证据不足",
+    "当前证据不足",
+    "现有证据不足",
+    "缺少证据",
+    "暂时不能给出可靠结论",
+    "无法确认",
+    "尚未定位",
+    "尚未命中",
+)
 _SYSTEM_PROMPT = """你是仓库代码问答系统的最终回答模型。
-
 你的唯一任务，是基于已经收集到的真实证据生成最终回答。你必须严格遵守以下规则：
-
 1. 只能使用简体中文回答。
 2. 只能基于提供的 question、history 和 evidence_pack 回答，不允许使用外部常识补全仓库事实。
 3. 不允许编造仓库中不存在的文件、函数、类、接口、配置项、调用链或结论。
 4. 先直接回答用户问题，再补充必要说明，不要先说套话。
 5. 必须区分“已确认事实”和“推断”：
    - 已确认事实：必须能被 evidence_pack 中的真实证据直接支撑。
-   - 推断：只有在证据能支撑方向但不能完全下结论时才能使用，并明确写出“这是基于现有证据的推断”。
+   - 推断：只有在证据能支持方向但不能完全下结论时才能使用，并明确写出“这是基于现有证据的推断”。
 6. 如果证据不足，必须明确说明“证据不足”，并指出还缺什么证据，不要伪装成完整回答。
 7. 如果 evidence_pack 中存在 citations、call_chains、files、symbols、routes、entrypoints，请优先利用这些证据组织回答。
 8. supplemental_notes 只能写必要补充，不要重复主答案。
@@ -50,6 +60,15 @@ class AnswerComposer:
         history: list,
         validation_feedback: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        local_structured_answer = self._compose_from_config_file_evidence(
+            question=question,
+            evidence_pack=evidence_pack,
+        )
+        if self._should_use_local_structured_answer_for_retry(
+            validation_feedback=validation_feedback,
+            local_structured_answer=local_structured_answer,
+        ):
+            return local_structured_answer
         if self._client is not None:
             try:
                 payload = await self._client.complete_json(
@@ -62,12 +81,18 @@ class AnswerComposer:
                     ),
                 )
                 validated = _AnswerPayload.model_validate(payload)
-                return {
+                llm_result = {
                     "answer": validated.answer,
                     "supplemental_notes": list(validated.supplemental_notes),
                     "confidence": validated.confidence if validated.confidence in {"high", "medium", "low"} else "medium",
                     "answer_source": "llm",
                 }
+                if self._should_prefer_local_structured_answer(
+                    llm_result=llm_result,
+                    local_structured_answer=local_structured_answer,
+                ):
+                    return local_structured_answer
+                return llm_result
             except Exception as exc:
                 _LOGGER.warning("answer_composer_llm_fallback: %s", exc)
 
@@ -158,6 +183,10 @@ class AnswerComposer:
         return item.path
 
     def _compose_local(self, *, question: str, evidence_pack: EvidencePack) -> dict[str, object]:
+        structured_answer = self._compose_from_config_file_evidence(question=question, evidence_pack=evidence_pack)
+        if structured_answer is not None:
+            return structured_answer
+
         if evidence_pack.call_chains:
             chain = self._select_best_call_chain(evidence_pack)
             return {
@@ -219,6 +248,122 @@ class AnswerComposer:
             "confidence": "low",
             "answer_source": "local",
         }
+
+    def _compose_from_config_file_evidence(
+        self,
+        *,
+        question: str,
+        evidence_pack: EvidencePack,
+    ) -> dict[str, object] | None:
+        for item in [*evidence_pack.citations, *evidence_pack.files]:
+            target_path = item.path or item.title
+            normalized_path = str(target_path or "").replace("\\", "/")
+            if not normalized_path:
+                continue
+
+            if self._is_docker_compose_path(normalized_path):
+                services = self._extract_docker_compose_services(item.snippet)
+                if services:
+                    service_list = "、".join(services)
+                    return {
+                        "answer": f"根据 {normalized_path} 的服务定义，docker compose 会启动这些服务：{service_list}。",
+                        "supplemental_notes": self._build_local_notes(
+                            evidence_pack,
+                            defaults=[f"服务名直接来自 {normalized_path} 的 `services:` 段落。"],
+                            fallback_limit=1,
+                        ),
+                        "confidence": "high" if item.snippet else "medium",
+                        "answer_source": "local",
+                    }
+
+            helm_templates_dir = self._extract_helm_templates_dir(normalized_path)
+            if helm_templates_dir:
+                return {
+                    "answer": f"根据当前命中的 Helm 模板文件，Helm Chart 模板目录在 {helm_templates_dir}。",
+                    "supplemental_notes": self._build_local_notes(
+                        evidence_pack,
+                        defaults=[f"当前命中的模板文件位于 {normalized_path}。"],
+                        fallback_limit=1,
+                    ),
+                    "confidence": "high",
+                    "answer_source": "local",
+                }
+
+        return None
+
+    def _should_prefer_local_structured_answer(
+        self,
+        *,
+        llm_result: dict[str, object],
+        local_structured_answer: dict[str, object] | None,
+    ) -> bool:
+        if local_structured_answer is None:
+            return False
+        combined = "\n".join(
+            [
+                str(llm_result.get("answer") or ""),
+                *[str(note) for note in llm_result.get("supplemental_notes") or []],
+            ]
+        )
+        return any(marker in combined for marker in _INSUFFICIENT_EVIDENCE_MARKERS)
+
+    def _should_use_local_structured_answer_for_retry(
+        self,
+        *,
+        validation_feedback: dict[str, object] | None,
+        local_structured_answer: dict[str, object] | None,
+    ) -> bool:
+        if local_structured_answer is None or not validation_feedback:
+            return False
+        issues = {str(item or "").strip() for item in list(validation_feedback.get("issues") or [])}
+        return bool(issues.intersection({"ungrounded_entity", "missing_must_include_entity"}))
+
+    def _is_docker_compose_path(self, path: str) -> bool:
+        lower_path = path.lower()
+        return bool(re.search(r"(^|/)docker-compose(?:\.[^/]+)?\.ya?ml$", lower_path))
+
+    def _extract_docker_compose_services(self, snippet: str) -> list[str]:
+        if not snippet or "services:" not in snippet:
+            return []
+        services: list[str] = []
+        in_services = False
+        services_indent: int | None = None
+        service_name_pattern = re.compile(r"^([A-Za-z0-9._-]+):(?:\s*(#.*)?)?$")
+
+        for raw_line in snippet.splitlines():
+            if not raw_line.strip():
+                continue
+            stripped = raw_line.lstrip(" ")
+            indent = len(raw_line) - len(stripped)
+
+            if not in_services:
+                if stripped == "services:":
+                    in_services = True
+                    services_indent = indent
+                continue
+
+            if services_indent is None:
+                break
+            if indent <= services_indent:
+                break
+            if indent != services_indent + 2:
+                continue
+
+            match = service_name_pattern.match(stripped)
+            if not match:
+                continue
+            services.append(match.group(1))
+
+        return list(dict.fromkeys(services))
+
+    def _extract_helm_templates_dir(self, path: str) -> str | None:
+        parts = PurePosixPath(path).parts
+        if "templates" not in parts:
+            return None
+        template_index = parts.index("templates")
+        if template_index < 1:
+            return None
+        return "/".join(parts[: template_index + 1])
 
     def _build_local_notes(
         self,

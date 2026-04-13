@@ -9,13 +9,36 @@ from app.services.code_graph.storage import CodeGraphStore
 
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 _CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}")
+_PATHLIKE_QUERY_PATTERN = re.compile(r"(?:/|\\|\.(?:py|ts|tsx|js|jsx|vue|json|ya?ml|toml|md)$)", re.IGNORECASE)
+_SPECIAL_PATH_QUERIES = {
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "dockerfile",
+    "chart.yaml",
+    "values.yaml",
+    "templates",
+    "ops/helm",
+}
 _PLANNING_KEYWORDS = (
     "知识库",
     "认知图",
     "任务队列",
+    "分析任务",
+    "任务提交",
+    "提交任务",
+    "调用链",
+    "链路",
     "健康检查",
     "前端",
     "后端",
+    "页面入口",
+    "入口组件",
+    "docker",
+    "compose",
+    "helm",
+    "templates",
     "app.state",
     "create_app",
     "health",
@@ -25,9 +48,11 @@ _PLANNING_KEYWORDS = (
 
 
 class ExactRetriever:
-    def __init__(self, *, graph_store: CodeGraphStore, chunk_retriever) -> None:
+    def __init__(self, *, graph_store: CodeGraphStore, chunk_retriever, repo_root: Path | str | None = None) -> None:
         self._graph_store = graph_store
         self._chunk_retriever = chunk_retriever
+        self._repo_root = Path(repo_root).resolve() if repo_root is not None else None
+        self._repo_files_cache: list[str] | None = None
 
     def retrieve(
         self,
@@ -47,10 +72,12 @@ class ExactRetriever:
         for entity in target_entities:
             candidates.extend(self.retrieve_by_symbol(task_id=task_id, symbol_name=entity, limit=limit))
             candidates.extend(self.retrieve_by_path(task_id=task_id, path=entity, limit=limit))
+            candidates.extend(self.retrieve_by_repo_path(task_id=task_id, path=entity, limit=limit))
 
         for query in search_queries or []:
             candidates.extend(self.retrieve_by_symbol(task_id=task_id, symbol_name=query, limit=limit))
             candidates.extend(self.retrieve_by_path(task_id=task_id, path=query, limit=limit))
+            candidates.extend(self.retrieve_by_repo_path(task_id=task_id, path=query, limit=limit))
             candidates.extend(self.retrieve_by_summary_substring(task_id=task_id, term=query, limit=limit))
 
         fts_queries = self._build_fts_queries(
@@ -66,7 +93,29 @@ class ExactRetriever:
             if key in seen:
                 continue
             seen.add(key)
-            ranked.append(candidate)
+            ranked.append(
+                RetrievalCandidate(
+                    task_id=candidate.task_id,
+                    item_id=candidate.item_id,
+                    item_type=candidate.item_type,
+                    path=candidate.path,
+                    symbol_id=candidate.symbol_id,
+                    qualified_name=candidate.qualified_name,
+                    score=(
+                        candidate.score
+                        + self._explicit_query_path_boost(
+                            candidate=candidate,
+                            queries=[*target_entities, *(search_queries or [])],
+                        )
+                        + self._question_anchor_boost(
+                            candidate=candidate,
+                            question_text=" ".join(part for part in (question, normalized_question) if part),
+                        )
+                    ),
+                    source=candidate.source,
+                    summary_zh=candidate.summary_zh,
+                )
+            )
         ranked.sort(key=lambda item: (-item.score, item.item_type, item.item_id))
         return ranked[:limit]
 
@@ -90,12 +139,19 @@ class ExactRetriever:
                 continue
             ranked_symbols.append((score, symbol))
 
-        ranked_files = self._extend_with_fallback_files(ranked_files=ranked_files, files=files, limit=max(limit, 1))
-        ranked_symbols = self._extend_with_fallback_symbols(
-            ranked_symbols=ranked_symbols,
-            symbols=symbols,
-            limit=max(limit, 1),
-        )
+        if ranked_files or ranked_symbols:
+            ranked_files = self._extend_with_fallback_files(ranked_files=ranked_files, files=files, limit=max(limit, 1))
+            ranked_symbols = self._extend_with_fallback_symbols(
+                ranked_symbols=ranked_symbols,
+                symbols=symbols,
+                limit=max(limit, 1),
+            )
+        if not ranked_symbols and ranked_files:
+            ranked_symbols = self._derive_symbols_from_ranked_files(
+                task_id=task_id,
+                ranked_files=ranked_files,
+                limit=max(limit, 1),
+            )
 
         ranked_files.sort(key=lambda item: (-item[0], item[1].path))
         ranked_symbols.sort(key=lambda item: (-item[0], item[1].file_path, item[1].start_line))
@@ -260,7 +316,7 @@ class ExactRetriever:
                 *list(file_node.keywords_zh),
             ]
         ).lower()
-        score = 3.0 if file_node.entry_role else 0.0
+        score = 0.0
         for term in terms:
             if term in file_node.path.lower():
                 score += 5.0
@@ -281,12 +337,12 @@ class ExactRetriever:
             ]
         ).lower()
         kind_boost = {"route": 4.0, "class": 3.0, "method": 2.5, "function": 2.0}.get(symbol.symbol_kind, 1.0)
-        score = kind_boost
+        score = 0.0
         for term in terms:
             if term in symbol.qualified_name.lower() or term == symbol.name.lower():
-                score += 5.0
+                score += 5.0 + kind_boost
             elif term in text:
-                score += 3.0
+                score += 3.0 + min(kind_boost, 1.5)
         return score
 
     def _build_relation_hints(self, *, task_id: str, ranked_symbols: list, symbols_by_id: dict[str, object]) -> list[dict[str, object]]:
@@ -371,6 +427,25 @@ class ExactRetriever:
                 break
         return extended
 
+    def _derive_symbols_from_ranked_files(
+        self,
+        *,
+        task_id: str,
+        ranked_files: list[tuple[float, object]],
+        limit: int,
+    ) -> list[tuple[float, object]]:
+        derived: list[tuple[float, object]] = []
+        seen_ids: set[str] = set()
+        for score, file_node in ranked_files:
+            for symbol in self._graph_store.list_symbols(task_id=task_id, file_path=file_node.path):
+                if symbol.symbol_id in seen_ids:
+                    continue
+                seen_ids.add(symbol.symbol_id)
+                derived.append((max(score - 1.0, 0.1), symbol))
+                if len(derived) >= limit:
+                    return derived
+        return derived
+
     def retrieve_by_path(self, *, task_id: str, path: str, limit: int = 8) -> list[RetrievalCandidate]:
         normalized = path.strip().lower()
         if not normalized:
@@ -397,3 +472,108 @@ class ExactRetriever:
             )
         results.sort(key=lambda item: -item.score)
         return results[:limit]
+
+    def retrieve_by_repo_path(self, *, task_id: str, path: str, limit: int = 8) -> list[RetrievalCandidate]:
+        normalized = path.strip().replace("\\", "/").lower()
+        if not normalized or self._repo_root is None:
+            return []
+        results: list[RetrievalCandidate] = []
+        for repo_path in self._list_repo_files():
+            repo_path_lower = repo_path.lower()
+            basename = Path(repo_path).name.lower()
+            if normalized not in {repo_path_lower, basename} and normalized not in repo_path_lower:
+                continue
+            score = 145.0 if normalized == repo_path_lower else 118.0
+            results.append(
+                RetrievalCandidate(
+                    task_id=task_id,
+                    item_id=repo_path,
+                    item_type="file",
+                    path=repo_path,
+                    symbol_id=None,
+                    qualified_name=None,
+                    score=score,
+                    source="exact",
+                    summary_zh="",
+                )
+            )
+        results.sort(key=lambda item: -item.score)
+        return results[:limit]
+
+    def _list_repo_files(self) -> list[str]:
+        if self._repo_root is None:
+            return []
+        if self._repo_files_cache is not None:
+            return self._repo_files_cache
+        files: list[str] = []
+        for path in self._repo_root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                relative = path.resolve().relative_to(self._repo_root)
+            except ValueError:
+                continue
+            files.append(relative.as_posix())
+        self._repo_files_cache = sorted(files)
+        return self._repo_files_cache
+
+    def _explicit_query_path_boost(self, *, candidate: RetrievalCandidate, queries: list[str]) -> float:
+        path = str(candidate.path or "").replace("\\", "/").lower()
+        if not path:
+            return 0.0
+        basename = Path(path).name.lower()
+        score = 0.0
+        for query in queries:
+            normalized = str(query or "").strip().replace("\\", "/").lower()
+            if len(normalized) < 2 or not self._looks_pathlike_query(normalized):
+                continue
+            score += self._score_path_query_match(path=path, basename=basename, query=normalized)
+        return score
+
+    def _looks_pathlike_query(self, query: str) -> bool:
+        return bool(_PATHLIKE_QUERY_PATTERN.search(query) or query in _SPECIAL_PATH_QUERIES)
+
+    def _score_path_query_match(self, *, path: str, basename: str, query: str) -> float:
+        if query == path:
+            return 120.0
+        if query == basename:
+            return 100.0
+        if "/" in query and path.startswith(query.rstrip("/") + "/"):
+            return 95.0
+        if "/" in query and query in path:
+            return 75.0
+        if query == "templates" and "/templates/" in f"/{path}":
+            return 85.0
+        if query in basename and len(query) >= 5:
+            return 40.0
+        return 0.0
+
+    def _question_anchor_boost(self, *, candidate: RetrievalCandidate, question_text: str) -> float:
+        normalized_question = str(question_text or "").lower()
+        path = str(candidate.path or "").replace("\\", "/").lower()
+        basename = Path(path).name.lower()
+        score = 0.0
+
+        if self._is_docker_compose_question(normalized_question):
+            if basename in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+                score += 180.0
+            elif basename == "dockerfile":
+                score += 120.0
+            elif "docker" in path:
+                score += 18.0
+
+        if self._is_helm_templates_question(normalized_question):
+            if "/templates/" in f"/{path}":
+                score += 180.0
+            elif path.startswith("ops/helm/"):
+                score += 120.0
+            elif basename in {"chart.yaml", "values.yaml"}:
+                score += 100.0
+
+        return score
+
+    def _is_docker_compose_question(self, question_text: str) -> bool:
+        return "docker compose" in question_text or "docker-compose" in question_text
+
+    def _is_helm_templates_question(self, question_text: str) -> bool:
+        return "helm" in question_text or "chart" in question_text or "templates" in question_text
